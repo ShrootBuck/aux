@@ -105,27 +105,56 @@ struct AuxCoreTests {
     }
     @Test func testFragmentedIPCReadsAndPingResponse() throws {
         var fds: [Int32] = [0, 0]
-        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
         let client = DiscordSocket(descriptor: fds[0])
         let peer = fds[1]
+        // This end writes raw fragments, so it needs its own SIGPIPE protection
+        // and bounded blocking I/O if the client times out or closes early.
+        var one: Int32 = 1
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        defer { client.close() }
+        guard setsockopt(peer, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size)) == 0,
+              setsockopt(peer, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0,
+              setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+            let error = RPCError.system(errno)
+            Darwin.close(peer)
+            throw error
+        }
         let done = DispatchGroup(); done.enter()
-        DispatchQueue.global().async {
+        // Never queue the peer behind tests that block waiting for its reply.
+        Thread.detachNewThread {
             defer { Darwin.close(peer); done.leave() }
-            let ping = RPCFrame(opcode: 3, payload: Data("heartbeat".utf8)).encoded()
-            let ready = RPCFrame(opcode: 1, payload: Data("{\"evt\":\"READY\"}".utf8)).encoded()
-            for byte in ping + ready { var byte = byte; _ = Darwin.write(peer, &byte, 1) }
-            var pong = [UInt8](repeating: 0, count: 17)
-            var count = 0
-            let capacity = pong.count
-            while count < capacity {
-                let amount = pong.withUnsafeMutableBytes { Darwin.read(peer, $0.baseAddress!.advanced(by: count), capacity - count) }
-                if amount <= 0 { break }; count += amount
+            do {
+                let ping = RPCFrame(opcode: 3, payload: Data("heartbeat".utf8)).encoded()
+                let ready = RPCFrame(opcode: 1, payload: Data("{\"evt\":\"READY\"}".utf8)).encoded()
+                for byte in ping + ready {
+                    var byte = byte
+                    var written: Int
+                    repeat { written = Darwin.write(peer, &byte, 1) } while written < 0 && errno == EINTR
+                    guard written == 1 else { throw RPCError.system(errno) }
+                }
+                let expected = RPCFrame(opcode: 4, payload: Data("heartbeat".utf8)).encoded()
+                var pong = Data(count: expected.count)
+                var count = 0
+                while count < expected.count {
+                    let amount = pong.withUnsafeMutableBytes {
+                        Darwin.read(peer, $0.baseAddress!.advanced(by: count), expected.count - count)
+                    }
+                    if amount < 0 && errno == EINTR { continue }
+                    guard amount > 0 else { throw RPCError.disconnected }
+                    count += amount
+                }
+                #expect(pong == expected)
+            } catch {
+                Issue.record(error)
             }
-            #expect(pong.first == 4)
+        }
+        defer {
+            client.close()
+            #expect(done.wait(timeout: .now() + 3) == .success)
         }
         let response = try client.response(until: Date().addingTimeInterval(2))
         #expect(response["evt"] as? String == "READY")
-        #expect(done.wait(timeout: .now() + 3) == .success)
     }
     @Test func testDisconnectedRPCDoesNotLeaveACommandHanging() throws {
         var fds: [Int32] = [0, 0]

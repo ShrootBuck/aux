@@ -21,7 +21,9 @@ private final class DiscordPeer: @unchecked Sendable {
         let client = DiscordSocket(descriptor: descriptors[0])
         let server = DiscordSocket(descriptor: descriptors[1])
         lock.lock(); connections += 1; lock.unlock()
-        DispatchQueue.global().async { [self] in
+        // The publisher blocks while waiting for this peer. A dedicated thread
+        // keeps the reply independent of the test executor's worker pool.
+        Thread.detachNewThread { [self] in
             defer {
                 server.close()
                 lock.lock(); closures += 1; lock.unlock()
