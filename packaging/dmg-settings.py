@@ -18,4 +18,5 @@ include_list_view_settings = False
 show_status_bar = False
 show_toolbar = False
 show_sidebar = False
-hide_extensions = ["Aux.app"]
+# Hiding an extension writes FinderInfo onto the signed app bundle, which fails
+# strict code-signature validation. Leave its metadata untouched in the image.
