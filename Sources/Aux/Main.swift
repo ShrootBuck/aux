@@ -49,14 +49,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let host = NSHostingController(rootView: root)
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
-        popover.contentSize = NSSize(width: 368, height: 700)
+        popover.contentSize = NSSize(width: 368, height: 580)
         updateStatusItem()
         subscription = model.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.updateStatusItem() } }
-        model.onAppearanceChange = { [weak self] in self?.updateAppearance() }
-        updateAppearance()
+        NSApp.appearance = nil
         model.start()
         if model.isPreview || args.contains("--window") {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 368, height: 700), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 368, height: 580), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = model.isPreview ? "Aux · Design preview" : "Aux"
             window.contentViewController = NSHostingController(rootView: root)
             window.isReleasedWhenClosed = false
@@ -123,21 +122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         button.setAccessibilityLabel("Aux")
         button.setAccessibilityValue(model.statusTitle)
     }
-    private func updateAppearance() {
-        let appearance: NSAppearance?
-        switch model.settings.appearance {
-        case .system: appearance = nil
-        case .light: appearance = NSAppearance(named: .aqua)
-        case .dark: appearance = NSAppearance(named: .darkAqua)
-        }
-        NSApp.appearance = appearance
-        popover?.appearance = appearance
-        settingsWindow?.appearance = appearance
-    }
     @objc func showSettings() {
         popover?.performClose(nil)
         if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 585), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 680), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             window.title = "Aux Settings"
             window.titlebarAppearsTransparent = true
             window.contentViewController = NSHostingController(rootView: SettingsView(model: model))

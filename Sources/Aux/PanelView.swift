@@ -30,9 +30,6 @@ struct PanelView: View {
     var openSettings: () -> Void = {}
     var quit: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ViewState private var previewExpanded = false
-    @ViewState private var seekPosition: Double?
 
     init(model: AppModel, openSettings: @escaping () -> Void = {}, quit: @escaping () -> Void = {}) {
         self.model = model; settings = model.settings; self.openSettings = openSettings; self.quit = quit
@@ -46,13 +43,11 @@ struct PanelView: View {
                     cover.padding(.top, 2).padding(.bottom, 18)
                     if let track = model.snapshot.track {
                         trackInfo(track)
-                        progress(track).padding(.top, 14)
-                        transport.padding(.top, 9).padding(.bottom, 18)
+                        progress(track).padding(.top, 12).padding(.bottom, 22)
                     } else {
                         emptyState.padding(.bottom, 20)
                     }
                     sharing
-                    if settings.hasApplicationID || model.isPreview { preview.padding(.top, 10) }
                     if let error = model.musicError, !model.permissionDenied {
                         Text(error).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 10)
                     }
@@ -73,10 +68,9 @@ struct PanelView: View {
                 Ellipse().fill(model.accent.opacity(scheme == .dark ? 0.08 : 0.07)).frame(width: 290, height: 250).blur(radius: 65).offset(y: 50)
             }
         }
-        .preferredColorScheme(settings.appearance.colorScheme)
     }
     private var panelBodyHeight: CGFloat {
-        let preferred: CGFloat = model.snapshot.track == nil ? 430 : (previewExpanded ? 665 : 607)
+        let preferred: CGFloat = model.snapshot.track == nil ? 420 : 485
         return min(preferred, max(260, (NSScreen.main?.visibleFrame.height ?? 900) - 140))
     }
 
@@ -133,39 +127,16 @@ struct PanelView: View {
 
     private func progress(_ track: Track) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            let position = seekPosition ?? model.snapshot.position(at: context.date)
-            VStack(spacing: 5) {
-                Slider(value: Binding(get: { seekPosition ?? model.snapshot.position(at: context.date) }, set: { seekPosition = $0 }), in: 0...max(1, track.duration), onEditingChanged: { editing in
-                    if !editing, let position = seekPosition { model.control(.seek(position)); seekPosition = nil }
-                })
-                .controlSize(.mini).tint(scheme == .dark ? .white.opacity(0.8) : .primary.opacity(0.65))
-                .disabled(!model.canControl || track.duration <= 0).accessibilityLabel("Playback position")
-                HStack {
-                    Text(formatTime(position))
-                    Spacer()
-                    Text(track.duration > 0 ? "−" + formatTime(max(0, track.duration - position)) : "LIVE")
-                }
-                .font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.tertiary)
+            HStack(spacing: 7) {
+                if model.snapshot.state == .paused { Text("Paused"); Text("·") }
+                Text(formatTime(model.snapshot.position(at: context.date)))
+                if track.duration > 0 { Text("/"); Text(formatTime(track.duration)) }
             }
+            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .combine)
         }
-    }
-
-    private var transport: some View {
-        HStack(spacing: 33) {
-            Button { model.control(.previous) } label: { Image(systemName: "backward.end.fill").font(.system(size: 18)) }
-                .accessibilityLabel("Previous track").help("Previous track")
-            Button { model.control(.playPause) } label: {
-                Image(systemName: model.snapshot.state == .playing ? "pause.fill" : "play.fill")
-                    .font(.system(size: 21, weight: .semibold))
-                    .frame(width: 48, height: 48)
-                    .background(.primary.opacity(0.07), in: Circle())
-            }
-            .accessibilityLabel(model.snapshot.state == .playing ? "Pause" : "Play").help("Play / pause")
-            Button { model.control(.next) } label: { Image(systemName: "forward.end.fill").font(.system(size: 18)) }
-                .accessibilityLabel("Next track").help("Next track")
-        }
-        .buttonStyle(.plain).disabled(!model.canControl || model.controlBusy)
-        .frame(maxWidth: .infinity)
     }
 
     private var emptyState: some View {
@@ -173,7 +144,7 @@ struct PanelView: View {
             Text(!settings.musicAccessRequested || model.permissionDenied ? "Connect Apple Music" : "Nothing playing")
                 .font(.system(size: 20, weight: .semibold)).tracking(-0.4)
             if !settings.musicAccessRequested || model.permissionDenied {
-                Text(model.permissionDenied ? "Allow Music access in Automation settings." : "Allow Aux to read and control playback.")
+                Text(model.permissionDenied ? "Allow Music access in Automation settings." : "Allow Aux to read your current track.")
                     .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             Button {
@@ -197,8 +168,7 @@ struct PanelView: View {
                     .frame(width: 30)
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Share on Discord").font(.system(size: 12, weight: .semibold))
-                    HStack(spacing: 4) {
-                        Circle().fill(model.statusColor).frame(width: 4, height: 4)
+                    if !model.isSharing && settings.sharingEnabled {
                         Text(model.statusTitle).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
@@ -215,46 +185,6 @@ struct PanelView: View {
         .padding(14)
         .background(.primary.opacity(scheme == .dark ? 0.045 : 0.035), in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.primary.opacity(0.045), lineWidth: 0.5))
-    }
-
-    private var preview: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { previewExpanded.toggle() }
-            } label: {
-                HStack {
-                    Text("Discord preview").font(.system(size: 11))
-                    Spacer()
-                    Image(systemName: previewExpanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
-                }.foregroundStyle(.secondary).padding(.vertical, 4)
-            }.buttonStyle(.plain).accessibilityLabel("Toggle Discord preview")
-            if previewExpanded {
-                if let payload = model.publication.accepted {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("LISTENING").font(.system(size: 9, weight: .bold)).tracking(1).foregroundStyle(.secondary)
-                        HStack(alignment: .top, spacing: 10) {
-                            Group {
-                                if let url = payload.assets?.large_image, let imageURL = URL(string: url) {
-                                    AsyncImage(url: imageURL) { image in image.resizable().aspectRatio(contentMode: .fill) } placeholder: { Image(systemName: "music.note") }
-                                } else { Image(systemName: "music.note").font(.system(size: 24)).foregroundStyle(.secondary) }
-                            }
-                            .frame(width: 52, height: 52).background(.primary.opacity(0.05)).clipShape(RoundedRectangle(cornerRadius: 7))
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(payload.details).font(.system(size: 12, weight: .semibold)).lineLimit(2)
-                                if let state = payload.state { Text(state).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2) }
-                                if payload.timestamps != nil { Text("Playback timer enabled").font(.system(size: 9)).foregroundStyle(.tertiary) }
-                            }
-                        }
-                        Text(model.isPreview ? "Sample only" : "Last accepted by Discord").font(.system(size: 9)).foregroundStyle(.tertiary)
-                    }
-                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-                } else {
-                    Text(model.publication.connection == .connected ? "No activity is being shared." : "Connect Discord to see the accepted activity.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary).padding(.vertical, 5)
-                }
-            }
-        }
     }
 
     private var footer: some View {

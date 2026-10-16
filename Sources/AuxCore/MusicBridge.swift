@@ -37,10 +37,9 @@ public actor MusicBridge {
         return record.coerce(toDescriptorType: fourCC("obj "))!
     }
 
-    private func send(eventClass: String = "core", id: String, direct: NSAppleEventDescriptor? = nil, value: NSAppleEventDescriptor? = nil) throws -> NSAppleEventDescriptor {
+    private func send(eventClass: String = "core", id: String, direct: NSAppleEventDescriptor? = nil) throws -> NSAppleEventDescriptor {
         let event = NSAppleEventDescriptor(eventClass: fourCC(eventClass), eventID: fourCC(id), targetDescriptor: try target(), returnID: -1, transactionID: 0)
         if let direct { event.setParam(direct, forKeyword: fourCC("----")) }
-        if let value { event.setParam(value, forKeyword: fourCC("data")) }
         do {
             let reply = try event.sendEvent(options: [.waitForReply, .canInteract], timeout: 2)
             let error = Int(reply.paramDescriptor(forKeyword: fourCC("errn"))?.int32Value ?? 0)
@@ -100,16 +99,4 @@ public actor MusicBridge {
         return data.isEmpty || data.count > 20_000_000 ? nil : data
     }
 
-    public enum Command: Sendable { case playPause, next, previous, seek(TimeInterval) }
-    public func perform(_ command: Command) throws {
-        switch command {
-        case .playPause: _ = try send(eventClass: "hook", id: "PlPs")
-        case .next: _ = try send(eventClass: "hook", id: "Next")
-        case .previous: _ = try send(eventClass: "hook", id: "Back")
-        case .seek(let position):
-            guard position.isFinite else { return }
-            _ = try send(id: "setd", direct: property("pPos"), value: NSAppleEventDescriptor(double: max(0, position)))
-        }
-        metadataReadAt = .distantPast
-    }
 }

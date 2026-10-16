@@ -14,5 +14,5 @@
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
-    <key>NSAppleEventsUsageDescription</key><string>Aux reads your current song and controls playback in Apple Music. When sharing is on, Aux sends your listening activity to Discord.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Aux reads your current song and artwork from Apple Music. When sharing is on, Aux sends your listening activity to Discord.</string>
 </dict></plist>

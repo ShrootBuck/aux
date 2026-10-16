@@ -17,6 +17,17 @@ public struct CatalogResult: Codable, Equatable, Sendable {
 }
 
 public enum CatalogMatcher {
+    /// An album cover does not identify a recording. Keep song links strict,
+    /// but allow the same album's cover when remaster titles or durations differ.
+    public static func albumMatch(for track: Track, results: [CatalogResult]) -> CatalogResult? {
+        guard !normalize(track.artist).isEmpty, !normalize(track.album).isEmpty else { return nil }
+        return results.first {
+            normalize($0.artistName ?? "") == normalize(track.artist) &&
+            normalize($0.collectionName ?? "") == normalize(track.album) &&
+            $0.artworkUrl100?.scheme == "https" &&
+            ($0.artworkUrl100?.host?.hasSuffix(".mzstatic.com") == true)
+        }
+    }
     public static func normalize(_ value: String) -> String {
         value.folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }.joined(separator: " ")
@@ -45,7 +56,9 @@ public actor CatalogResolver {
     private var nextRequest = Date.distantPast
 
     public init(directory: URL) {
-        cacheURL = directory.appendingPathComponent("catalog-v1.json")
+        // The previous cache contains misses caused by requiring a song match
+        // for album art. Don't preserve those misses after upgrading.
+        cacheURL = directory.appendingPathComponent("catalog-v2.json")
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 6
         configuration.timeoutIntervalForResource = 10
@@ -58,29 +71,44 @@ public actor CatalogResolver {
         let country = country.uppercased()
         let key = country + "|" + track.identity
         if let entry = entries[key], entry.expiresAt > Date() { return entry.extras }
-        // Canceled lookups don't reserve future slots and delay the current song.
-        while Date() < nextRequest { try await Task.sleep(for: .seconds(max(0, nextRequest.timeIntervalSinceNow))) }
-        try Task.checkCancellation()
-        nextRequest = Date().addingTimeInterval(3.1)
-        var components = URLComponents(string: "https://itunes.apple.com/search")!
-        components.queryItems = [
-            .init(name: "term", value: "\(track.title) \(track.artist) \(track.album)"),
-            .init(name: "media", value: "music"), .init(name: "entity", value: "song"),
-            .init(name: "country", value: country), .init(name: "limit", value: "15")
-        ]
-        let (data, response) = try await session.data(from: components.url!)
-        try Task.checkCancellation()
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-        let match = CatalogMatcher.bestMatch(for: track, results: try JSONDecoder().decode(Response.self, from: data).results)
-        let extras = match.map {
+        let songs = try await search(term: "\(track.title) \(track.artist) \(track.album)", entity: "song", country: country)
+        let match = CatalogMatcher.bestMatch(for: track, results: songs)
+        var extras = match.map {
             TrackExtras(artworkURL: $0.artworkUrl100.map(Self.largeArtwork), trackURL: $0.trackViewUrl, artistURL: $0.artistViewUrl, albumURL: $0.collectionViewUrl)
         }
+        if extras?.artworkURL == nil {
+            let albums = try await search(term: "\(track.artist) \(track.album)", entity: "album", country: country)
+            if let album = CatalogMatcher.albumMatch(for: track, results: albums) {
+                if extras == nil { extras = TrackExtras() }
+                extras?.artworkURL = album.artworkUrl100.map(Self.largeArtwork)
+                extras?.albumURL = album.collectionViewUrl
+                // Never manufacture a song link from an album-only match.
+            }
+        }
+        try Task.checkCancellation()
         entries[key] = Entry(extras: extras, expiresAt: Date().addingTimeInterval(extras == nil ? 3600 : 7 * 86400))
         entries = entries.filter { $0.value.expiresAt > Date() }
         if entries.count > 400 { entries = Dictionary(uniqueKeysWithValues: entries.sorted { $0.value.expiresAt > $1.value.expiresAt }.prefix(300).map { ($0.key, $0.value) }) }
         try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let encoded = try? JSONEncoder().encode(entries) { try? encoded.write(to: cacheURL, options: .atomic) }
         return extras
+    }
+
+    private func search(term: String, entity: String, country: String) async throws -> [CatalogResult] {
+        // Canceled lookups don't reserve future slots and delay the current song.
+        while Date() < nextRequest { try await Task.sleep(for: .seconds(max(0, nextRequest.timeIntervalSinceNow))) }
+        try Task.checkCancellation()
+        nextRequest = Date().addingTimeInterval(3.1)
+        var components = URLComponents(string: "https://itunes.apple.com/search")!
+        components.queryItems = [
+            .init(name: "term", value: term),
+            .init(name: "media", value: "music"), .init(name: "entity", value: entity),
+            .init(name: "country", value: country), .init(name: "limit", value: "50")
+        ]
+        let (data, response) = try await session.data(from: components.url!)
+        try Task.checkCancellation()
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        return try JSONDecoder().decode(Response.self, from: data).results
     }
     private static func largeArtwork(_ url: URL) -> URL {
         guard url.host?.hasSuffix("mzstatic.com") == true else { return url }

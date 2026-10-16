@@ -3,12 +3,6 @@ import SwiftUI
 import ServiceManagement
 import AuxCore
 
-enum AppAppearance: String, CaseIterable {
-    case system, light, dark
-    var label: String { rawValue.capitalized }
-    var colorScheme: ColorScheme? { self == .system ? nil : (self == .dark ? .dark : .light) }
-}
-
 @MainActor
 final class SettingsStore: ObservableObject {
     private let defaults: UserDefaults
@@ -19,9 +13,7 @@ final class SettingsStore: ObservableObject {
     @Published var pauseBehavior: PauseBehavior { didSet { save("pauseBehavior", pauseBehavior.rawValue) } }
     @Published var headline: PresenceHeadline { didSet { save("headline", headline.rawValue) } }
     @Published var showAlbum: Bool { didSet { save("showAlbum", showAlbum) } }
-    @Published var appearance: AppAppearance { didSet { save("appearance", appearance.rawValue) } }
     @Published var country: String { didSet { save("country", country) } }
-    @Published var uploadArtwork: Bool { didSet { save("uploadArtwork", uploadArtwork) } }
     @Published var launchAtLogin = false
     @Published var loginError: String?
 
@@ -35,9 +27,7 @@ final class SettingsStore: ObservableObject {
         pauseBehavior = PauseBehavior(rawValue: defaults.string(forKey: "pauseBehavior") ?? "") ?? .hide
         headline = PresenceHeadline(rawValue: defaults.string(forKey: "headline") ?? "") ?? .song
         showAlbum = defaults.object(forKey: "showAlbum") as? Bool ?? true
-        appearance = AppAppearance(rawValue: defaults.string(forKey: "appearance") ?? "") ?? .system
         country = defaults.string(forKey: "country") ?? Locale.current.region?.identifier ?? "US"
-        uploadArtwork = defaults.bool(forKey: "uploadArtwork")
         refreshLoginStatus()
     }
     private func save(_ key: String, _ value: Any) { defaults.set(value, forKey: key); onChange?() }

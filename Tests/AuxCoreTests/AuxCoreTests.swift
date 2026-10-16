@@ -62,6 +62,24 @@ struct AuxCoreTests {
         #expect(result.hasSuffix("..."))
         #expect(PresencePayload.safeText("A") == "A ")
     }
+    @Test func testRemasterMismatchCanUseAlbumCoverWithoutMatchingRecording() {
+        let juicy = Track(id: "juicy", title: "Juicy (2007 Remaster)", artist: "The Notorious B.I.G.", album: "Greatest Hits", duration: 302)
+        let result = CatalogResult(trackName: "Juicy", artistName: juicy.artist, collectionName: juicy.album, trackTimeMillis: 285760, artworkUrl100: URL(string: "https://is1-ssl.mzstatic.com/image/600x600bb.jpg"))
+        #expect(CatalogMatcher.bestMatch(for: juicy, results: [result]) == nil)
+        #expect(CatalogMatcher.albumMatch(for: juicy, results: [result]) == result)
+        let extras = TrackExtras(artworkURL: result.artworkUrl100)
+        let payload = PresencePayload.make(snapshot: .init(state: .playing, track: juicy), pausedAt: nil, extras: extras, options: .init())
+        #expect(payload?.assets?.large_image == result.artworkUrl100?.absoluteString)
+        #expect(payload?.details_url == nil)
+        #expect(payload?.buttons == nil)
+    }
+    @Test func testAlbumArtworkRejectsWrongArtistAndEdition() {
+        let cover = URL(string: "https://is1-ssl.mzstatic.com/image/600x600bb.jpg")!
+        let otherArtist = CatalogResult(trackName: "", artistName: "Cover Band", collectionName: track.album, artworkUrl100: cover)
+        let otherEdition = CatalogResult(trackName: "", artistName: track.artist, collectionName: "Kid A (Deluxe)", artworkUrl100: cover)
+        let notApple = CatalogResult(trackName: "", artistName: track.artist, collectionName: track.album, artworkUrl100: URL(string: "https://example.com/cover.jpg"))
+        #expect(CatalogMatcher.albumMatch(for: track, results: [otherArtist, otherEdition, notApple]) == nil)
+    }
     @Test func testClearingGetsPriorityButStillHonorsBurstBudget() {
         var budget = PublicationBudget()
         budget.record(at: epoch)

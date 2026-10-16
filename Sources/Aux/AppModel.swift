@@ -16,7 +16,6 @@ final class AppModel: ObservableObject {
     @Published var permissionDenied = false
     @Published var artworkStatus = ""
     @Published var extras: TrackExtras?
-    @Published var controlBusy = false
     @Published var panelVisible = false
     @Published var sleeping = false
 
@@ -32,7 +31,6 @@ final class AppModel: ObservableObject {
     private var imageIdentity = ""
     private var enrichmentKey = ""
     private var imageRetryAt = Date.distantPast
-    private var uploadedRefreshAt = Date.distantFuture
     private var revision: UInt64 = 0
     private var lifecycle: UInt64 = 0
     private var stopped = false
@@ -41,7 +39,6 @@ final class AppModel: ObservableObject {
     private var forceTimeline = false
     private var nextObservation = Date.distantPast
     private var settingsSubscription: AnyCancellable?
-    var onAppearanceChange: (() -> Void)?
 
     init(preview: Bool = false) {
         isPreview = preview
@@ -79,7 +76,6 @@ final class AppModel: ObservableObject {
         return .secondary
     }
     var isSharing: Bool { !isPreview && publication.connection == .connected && publication.accepted != nil }
-    var canControl: Bool { settings.musicAccessRequested && snapshot.state != .notRunning && !permissionDenied && !isPreview && !sleeping && !stopped }
 
     func start() {
         guard !isPreview, !stopped, timer == nil else { return }
@@ -160,7 +156,6 @@ final class AppModel: ObservableObject {
 
     private func settingsChanged() {
         guard !isPreview, !stopped else { return }
-        onAppearanceChange?()
         refreshArtworkIfNeeded()
         Task { await publish() }
         requestRefresh()
@@ -174,19 +169,14 @@ final class AppModel: ObservableObject {
             accent = Color(red: 0.97, green: 0.43, blue: 0.28)
             return
         }
-        let canUpload = settings.uploadArtwork && settings.sharingEnabled && settings.hasApplicationID &&
-            PresencePayload.make(snapshot: snapshot, pausedAt: timeline.pausedAt, extras: nil, options: settings.options) != nil
-        let key = track.identity + "|" + settings.country + "|\(canUpload)"
+        let key = track.identity + "|" + settings.country
         let newTrack = imageIdentity != track.identity
-        guard key != enrichmentKey || (enrichment == nil && Date() >= imageRetryAt) || Date() >= uploadedRefreshAt else { return }
+        guard key != enrichmentKey || (enrichment == nil && Date() >= imageRetryAt) else { return }
         enrichment?.cancel()
         enrichmentKey = key
         imageIdentity = track.identity
         imageRetryAt = .distantFuture
-        uploadedRefreshAt = .distantFuture
         if newTrack { artwork = nil; localArtwork = nil; extras = nil; accent = Color(red: 0.97, green: 0.43, blue: 0.28) }
-        // Drop an uploaded URL immediately when uploading is disabled.
-        if !canUpload, extras?.artworkURL?.host == "litter.catbox.moe" { extras?.artworkURL = nil }
         let country = settings.country
         artworkStatus = "Finding artwork…"
         enrichment = Task { [weak self] in
@@ -200,7 +190,7 @@ final class AppModel: ObservableObject {
                 }
             }
             do {
-                var resolved = try await self.catalog.resolve(track, country: country) ?? TrackExtras()
+                let resolved = try await self.catalog.resolve(track, country: country) ?? TrackExtras()
                 guard !Task.isCancelled, self.enrichmentKey == key else { return }
                 if let url = resolved.artworkURL {
                     self.artworkStatus = "Apple catalog artwork"
@@ -208,13 +198,9 @@ final class AppModel: ObservableObject {
                         guard !Task.isCancelled, self.enrichmentKey == key else { return }
                         self.setArtwork(image)
                     }
-                } else if canUpload, let data = self.localArtwork {
-                    self.artworkStatus = "Uploading cover…"
-                    resolved.artworkURL = try await self.images.upload(data)
-                    self.uploadedRefreshAt = Date().addingTimeInterval(50 * 60)
-                    self.artworkStatus = "Temporary cover · Catbox"
                 } else {
-                    self.artworkStatus = self.artwork == nil ? "No matching artwork" : "Local cover · visible in Aux"
+                    self.artworkStatus = "No Apple catalog cover · local artwork stays in Aux"
+                    self.imageRetryAt = Date().addingTimeInterval(3600)
                 }
                 guard !Task.isCancelled, self.enrichmentKey == key else { return }
                 self.extras = resolved
@@ -243,16 +229,6 @@ final class AppModel: ObservableObject {
     }
 
     func connectMusic() { settings.musicAccessRequested = true; permissionDenied = false; requestRefresh() }
-    func control(_ command: MusicBridge.Command) {
-        guard canControl, !controlBusy else { return }
-        controlBusy = true
-        Task {
-            do { try await music.perform(command); forceTimeline = true; musicError = nil }
-            catch { musicError = error.localizedDescription }
-            controlBusy = false
-            requestRefresh()
-        }
-    }
     func openMusic() {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Music") { NSWorkspace.shared.openApplication(at: url, configuration: .init()) }
     }
