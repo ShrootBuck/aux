@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
-        let root = MenuBarView(model: model, quit: { NSApp.terminate(nil) })
+        let root = MenuBarView(model: model)
         let host = NSHostingController(rootView: root)
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
@@ -119,14 +119,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
 struct MenuBarView: View {
     @ObservedObject var model: AppModel
-    var quit: () -> Void
 
     var body: some View {
         Group {
             if model.showingSettings {
                 SettingsView(model: model)
             } else {
-                PanelView(model: model, openSettings: { model.showingSettings = true }, quit: quit)
+                PanelView(model: model, openSettings: { model.showingSettings = true })
             }
         }
     }

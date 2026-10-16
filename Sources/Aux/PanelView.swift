@@ -28,11 +28,10 @@ struct PanelView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsStore
     var openSettings: () -> Void = {}
-    var quit: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
-    init(model: AppModel, openSettings: @escaping () -> Void = {}, quit: @escaping () -> Void = {}) {
-        self.model = model; settings = model.settings; self.openSettings = openSettings; self.quit = quit
+    init(model: AppModel, openSettings: @escaping () -> Void = {}) {
+        self.model = model; settings = model.settings; self.openSettings = openSettings
     }
 
     var body: some View {
@@ -57,7 +56,6 @@ struct PanelView: View {
             }
             .scrollIndicators(.hidden)
             .frame(height: panelBodyHeight)
-            footer.padding(.horizontal, 19).padding(.vertical, 9)
         }
         .frame(width: 368)
         .background {
@@ -177,22 +175,7 @@ struct PanelView: View {
         .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.primary.opacity(0.045), lineWidth: 0.5))
     }
 
-    private var footer: some View {
-        HStack {
-            Button { model.openMusic() } label: { Label("Apple Music", systemImage: "music.note").font(.system(size: 10, weight: .medium)) }
-                .buttonStyle(QuietButtonStyle()).help("Open Apple Music")
-            Spacer()
-            if model.isPreview { Text("PREVIEW").font(.system(size: 8, weight: .semibold)).tracking(1).foregroundStyle(.tertiary) }
-            Menu {
-                Button("Reconnect Discord") { model.retryDiscord() }
-                Button("Settings…", action: openSettings)
-                Divider()
-                Button("Quit Aux", action: quit).keyboardShortcut("q")
-            } label: { Image(systemName: "ellipsis").font(.system(size: 15)).frame(width: 24, height: 20) }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("More options").accessibilityLabel("More options")
-        }
-        .overlay(alignment: .top) { Rectangle().fill(.primary.opacity(0.06)).frame(height: 0.5) }
-    }
+
 }
 
 func formatTime(_ seconds: TimeInterval) -> String {
