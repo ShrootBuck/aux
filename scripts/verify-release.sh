@@ -34,5 +34,11 @@ hdiutil attach dist/Aux.dmg -readonly -nobrowse -mountpoint "$MOUNT" -quiet
 MOUNTED=true
 verify_app "$MOUNT/Aux.app"
 [[ "$(readlink "$MOUNT/Applications")" == /Applications ]]
-[[ -f "$MOUNT/Install.txt" ]]
+# The install surface should contain only the app and its destination.
+python3 - "$MOUNT" <<'PY'
+from pathlib import Path
+import sys
+visible = {path.name for path in Path(sys.argv[1]).iterdir() if not path.name.startswith(".")}
+assert visible == {"Aux.app", "Applications"}, f"Unexpected installer contents: {visible}"
+PY
 (cd dist && shasum -a 256 -c SHA256SUMS.txt)

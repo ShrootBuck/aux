@@ -2,14 +2,14 @@
 from pathlib import Path
 
 app = Path(defines["app"]).resolve()
-files = [str(app), (defines["readme"], "Install.txt")]
+files = [str(app)]
 symlinks = {"Applications": "/Applications"}
 icon = str(app / "Contents/Resources/Aux.icns")
 format = "UDZO"
 filesystem = "HFS+"
-background = "builtin-arrow"
-window_rect = ((200, 150), (640, 420))
-icon_locations = {"Aux.app": (180, 170), "Applications": (460, 170), "Install.txt": (320, 320)}
+background = defines["background"]
+window_rect = ((200, 150), (640, 320))
+icon_locations = {"Aux.app": (180, 150), "Applications": (460, 150)}
 icon_size = 100
 text_size = 14
 default_view = "icon-view"
