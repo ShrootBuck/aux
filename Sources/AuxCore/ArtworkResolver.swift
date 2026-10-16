@@ -7,6 +7,7 @@ public struct ArtworkResolution: Sendable {
     public var source: Source
     public var retryAt: Date
     public var uploadFailed: Bool
+    public var fallbackArtworkURL: URL? = nil
 }
 
 /// Prefer the library's actual cover; catalog matching still supplies song links.
@@ -64,6 +65,7 @@ public struct ArtworkResolver: Sendable {
         try Task.checkCancellation()
         var source = ArtworkResolution.Source.none
         var catalogImage: Data?
+        let catalogArtworkURL = extras.artworkURL
         if let localURL {
             extras.artworkURL = localURL
             source = .library
@@ -82,6 +84,7 @@ public struct ArtworkResolver: Sendable {
         } else if source == .none {
             retryAt = min(retryAt, Date().addingTimeInterval(3600))
         }
-        return ArtworkResolution(extras: extras, image: localArtwork ?? catalogImage, source: source, retryAt: retryAt, uploadFailed: uploadFailed)
+        return ArtworkResolution(extras: extras, image: localArtwork ?? catalogImage, source: source, retryAt: retryAt, uploadFailed: uploadFailed,
+                                 fallbackArtworkURL: source == .library ? catalogArtworkURL : nil)
     }
 }

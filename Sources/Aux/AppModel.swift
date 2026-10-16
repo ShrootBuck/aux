@@ -27,6 +27,7 @@ final class AppModel: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var enrichment: Task<Void, Never>?
     private var localArtwork: Data?
+    private var fallbackArtworkURL: URL?
     private var imageIdentity = ""
     private var enrichmentKey = ""
     private var imageRetryAt = Date.distantPast
@@ -84,6 +85,17 @@ final class AppModel: ObservableObject {
         return .secondary
     }
     var isSharing: Bool { !isPreview && publication.connection == .connected && publication.accepted != nil }
+
+    var artworkDiagnostic: String {
+        guard publication.connection == .connected, publication.accepted != nil else { return artworkStatus }
+        let source = publication.artworkMessage ?? artworkStatus
+        switch publication.artwork {
+        case .none: return source
+        case .checking: return source + " · checking Discord image"
+        case .available: return source + " · Discord image verified"
+        case .unavailable: return publication.artworkMessage ?? "Artwork unavailable in Discord · will retry"
+        }
+    }
 
     func start() {
         guard !isPreview, !stopped, timer == nil else { return }
@@ -162,7 +174,7 @@ final class AppModel: ObservableObject {
         let ownRevision = revision
         let desired = sleeping || musicError != nil ? nil : PresencePayload.make(snapshot: snapshot, extras: extras, options: settings.options)
         let paused = snapshot.state == .paused && settings.sharingEnabled && musicError == nil
-        let result = await publisher.reconcile(desired, applicationID: SettingsStore.applicationID, revision: ownRevision, paused: paused)
+        let result = await publisher.reconcile(desired, applicationID: SettingsStore.applicationID, revision: ownRevision, paused: paused, fallbackArtworkURL: fallbackArtworkURL)
         guard !stopped, !sleeping, ownRevision == revision else { return }
         publication = result
     }
@@ -182,6 +194,7 @@ final class AppModel: ObservableObject {
         guard let track = snapshot.track else {
             enrichment?.cancel(); enrichment = nil
             imageIdentity = ""; enrichmentKey = ""; artwork = nil; extras = nil; localArtwork = nil; artworkStatus = ""
+            fallbackArtworkURL = nil
             return
         }
         let uploadAllowed = settings.shareLocalArtwork && settings.sharingEnabled && snapshot.state == .playing
@@ -192,7 +205,7 @@ final class AppModel: ObservableObject {
         enrichmentKey = key
         imageIdentity = track.identity
         imageRetryAt = .distantFuture
-        if newTrack { artwork = nil; localArtwork = nil; extras = nil }
+        if newTrack { artwork = nil; localArtwork = nil; extras = nil; fallbackArtworkURL = nil }
         let country = settings.country
         artworkStatus = "Finding artwork…"
         enrichment = Task { [weak self] in
@@ -214,7 +227,7 @@ final class AppModel: ObservableObject {
             self.imageRetryAt = resolved.retryAt
             if self.artwork == nil, let image = resolved.image { self.setArtwork(image) }
             switch resolved.source {
-            case .library: self.artworkStatus = "Library artwork shared via Catbox"
+            case .library: self.artworkStatus = "Library artwork uploaded to Catbox"
             case .catalog:
                 self.artworkStatus = resolved.uploadFailed ? "Apple catalog artwork · local upload will retry" : "Apple catalog artwork"
             case .none:
@@ -223,6 +236,7 @@ final class AppModel: ObservableObject {
                 else { self.artworkStatus = "No artwork available" }
             }
             self.extras = resolved.extras
+            self.fallbackArtworkURL = resolved.fallbackArtworkURL
             self.enrichment = nil
             await self.publish()
         }

@@ -4,11 +4,11 @@ import UniformTypeIdentifiers
 
 public actor ArtworkService {
     private let session: URLSession
-    public init() {
+    public init(session: URLSession? = nil) {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 8
         configuration.timeoutIntervalForResource = 15
-        session = URLSession(configuration: configuration)
+        self.session = session ?? URLSession(configuration: configuration)
     }
     public nonisolated static func thumbnail(_ data: Data, size: Int = 700, quality: Double = 0.88) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
@@ -39,5 +39,21 @@ public actor ArtworkService {
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               (try file.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0 < 20_000_000 else { return nil }
         return Self.thumbnail(try Data(contentsOf: file))
+    }
+
+    /// RPC acceptance only confirms the activity, not that Discord can fetch its
+    /// image. Check the media-proxy reference returned by SET_ACTIVITY itself.
+    public nonisolated static func discordProxyURL(_ reference: String?) -> URL? {
+        guard let reference, reference.hasPrefix("mp:external/"),
+              !reference.contains("?"), !reference.contains("#"),
+              !reference.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains($0) }),
+              let url = URL(string: "https://media.discordapp.net/" + reference.dropFirst(3)),
+              url.host == "media.discordapp.net" else { return nil }
+        return url
+    }
+
+    public func discordImageAvailable(_ reference: String?) async -> Bool {
+        guard let url = Self.discordProxyURL(reference) else { return false }
+        return (try? await download(url)) != nil
     }
 }

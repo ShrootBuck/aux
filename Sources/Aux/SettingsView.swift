@@ -41,7 +41,7 @@ struct SettingsView: View {
                 Text(model.statusTitle).font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer()
                 Button(copied ? "Copied" : "Copy diagnostics") {
-                    let text = "Aux \(version)\nmacOS \(ProcessInfo.processInfo.operatingSystemVersionString)\nMusic: \(model.snapshot.state.rawValue)\nMusic access: \(model.musicAccessTitle)\nDiscord: \(model.publication.connection.rawValue)\nSharing enabled: \(settings.sharingEnabled)\nAccepted activity: \(model.publication.accepted != nil)\nArtwork: \(model.artworkStatus)\nError: \(model.musicError ?? model.publication.message ?? "none")"
+                    let text = "Aux \(version)\nmacOS \(ProcessInfo.processInfo.operatingSystemVersionString)\nMusic: \(model.snapshot.state.rawValue)\nMusic access: \(model.musicAccessTitle)\nDiscord: \(model.publication.connection.rawValue)\nSharing enabled: \(settings.sharingEnabled)\nAccepted activity: \(model.publication.accepted != nil)\nArtwork: \(model.artworkDiagnostic)\nError: \(model.musicError ?? model.publication.message ?? "none")"
                     NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
                     copied = true
                 }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(.secondary)
@@ -100,7 +100,7 @@ struct SettingsView: View {
                 Toggle("Share local artwork", isOn: $settings.shareLocalArtwork)
                 Text("Prefer your Music library's cover on Discord by uploading a small copy to Catbox. Fall back to Apple's catalog if unavailable. Anyone with its link can view it. Turning this off stops uploads; existing copies remain on Catbox.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if !model.artworkStatus.isEmpty { Text(model.artworkStatus).font(.system(size: 10)).foregroundStyle(.tertiary) }
+                if !model.artworkDiagnostic.isEmpty { Text(model.artworkDiagnostic).font(.system(size: 10)).foregroundStyle(.tertiary) }
             }
         }.font(.system(size: 12)).toggleStyle(.switch).controlSize(.small).disabled(model.isPreview)
     }

@@ -156,17 +156,30 @@ final class DiscordSocket {
 
 public struct PublicationStatus: Equatable, Sendable {
     public enum Connection: String, Sendable { case needsSetup, waiting, connected, paused }
+    public enum Artwork: String, Sendable { case none, checking, available, unavailable }
     public var connection: Connection = .needsSetup
     public var accepted: PresencePayload?
     public var acceptedAt: Date?
     public var pending = false
     public var message: String?
     public var userName: String?
+    public var artwork: Artwork = .none
+    public var artworkMessage: String?
     public init() {}
 }
 
 public actor DiscordPublisher {
     private let connect: @Sendable () throws -> DiscordSocket
+    private let verifyArtwork: @Sendable (String?) async -> Bool
+    private struct ImageCheck {
+        var available: Bool
+        var expires: Date
+    }
+    private var imageChecks: [String: ImageCheck] = [:]
+    private var imageVerification: Task<Void, Never>?
+    private var imageVerificationID: UUID?
+    private var verifyingImage: String?
+    private var acceptedImageReference: String?
     private var socket: DiscordSocket?
     private var applicationID = ""
     private var latestRevision: UInt64 = 0
@@ -175,13 +188,21 @@ public actor DiscordPublisher {
     private var hasAcknowledgedState = false
     private var budget = PublicationBudget()
     private var status = PublicationStatus()
-    public init() { connect = { try DiscordSocket.connect() } }
-    init(connect: @escaping @Sendable () throws -> DiscordSocket) { self.connect = connect }
+    public init() {
+        connect = { try DiscordSocket.connect() }
+        let images = ArtworkService()
+        verifyArtwork = { await images.discordImageAvailable($0) }
+    }
+    init(connect: @escaping @Sendable () throws -> DiscordSocket,
+         verifyArtwork: @escaping @Sendable (String?) async -> Bool = { _ in false }) {
+        self.connect = connect
+        self.verifyArtwork = verifyArtwork
+    }
     public static func validApplicationID(_ value: String) -> Bool {
         (17...20).contains(value.count) && value.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
     }
 
-    public func reconcile(_ desired: PresencePayload?, applicationID id: String, revision: UInt64, paused: Bool = false) -> PublicationStatus {
+    public func reconcile(_ desired: PresencePayload?, applicationID id: String, revision: UInt64, paused: Bool = false, fallbackArtworkURL: URL? = nil) -> PublicationStatus {
         guard revision >= latestRevision else { return status }
         latestRevision = revision
         // Pausing ends the IPC session without sending SET_ACTIVITY(null).
@@ -200,6 +221,23 @@ public actor DiscordPublisher {
             failures = 0
         }
         guard Self.validApplicationID(id) else { status = .init(); return status }
+        imageChecks = imageChecks.filter { $0.value.expires > Date() }
+        var effective = desired
+        status.artworkMessage = nil
+        if let image = desired?.assets?.large_image, imageChecks[image]?.available == false {
+            if let fallback = fallbackArtworkURL, fallback.scheme == "https",
+               fallback.absoluteString != image, imageChecks[fallback.absoluteString]?.available != false {
+                effective?.assets?.large_image = fallback.absoluteString
+                status.artworkMessage = "Preferred artwork unavailable in Discord · using Apple catalog artwork"
+            } else {
+                effective?.assets = nil
+                status.artworkMessage = "Artwork unavailable in Discord · will retry"
+            }
+        }
+        let image = effective?.assets?.large_image
+        if verifyingImage != image { cancelImageVerification() }
+        status.artwork = image == nil ? (desired?.assets?.large_image == nil ? .none : .unavailable) :
+            (imageChecks[image!]?.available == true ? .available : .checking)
         do {
             if let socket { try socket.maintain() }
             if socket == nil {
@@ -216,24 +254,35 @@ public actor DiscordPublisher {
                 status.connection = .connected
                 status.message = nil
             }
-            status.pending = !hasAcknowledgedState || desired != status.accepted
-            guard status.pending else { return status }
+            status.pending = !hasAcknowledgedState || effective != status.accepted
+            guard status.pending else {
+                if let image, imageChecks[image] == nil, verifyingImage != image {
+                    checkImage(image, reference: acceptedImageReference)
+                }
+                return status
+            }
             guard budget.delay(at: Date(), clearing: desired == nil) == 0 else { return status }
             let nonce = UUID().uuidString
-            let activity: Any = try desired.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) } ?? NSNull()
+            let activity: Any = try effective.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) } ?? NSNull()
             let deadline = Date().addingTimeInterval(2)
             try socket!.sendJSON(opcode: 1, object: ["cmd": "SET_ACTIVITY", "args": ["pid": ProcessInfo.processInfo.processIdentifier, "activity": activity], "nonce": nonce], until: deadline)
             budget.record(at: Date())
-            _ = try socket!.response(nonce: nonce, until: deadline)
-            status.accepted = desired
+            let response = try socket!.response(nonce: nonce, until: deadline)
+            status.accepted = effective
             hasAcknowledgedState = true
             status.acceptedAt = Date()
             status.pending = false
             status.message = nil
+            acceptedImageReference = ((response["data"] as? [String: Any])?["assets"] as? [String: Any])?["large_image"] as? String
+            if let image, imageChecks[image] == nil, verifyingImage != image {
+                checkImage(image, reference: acceptedImageReference)
+            }
         } catch {
+            cancelImageVerification()
             socket?.close(); socket = nil
             status.connection = .waiting
             status.accepted = nil
+            acceptedImageReference = nil
             status.acceptedAt = nil
             status.pending = desired != nil
             status.message = error.localizedDescription
@@ -242,12 +291,48 @@ public actor DiscordPublisher {
         }
         return status
     }
+
+    private func checkImage(_ image: String, reference: String?) {
+        cancelImageVerification()
+        let token = UUID()
+        imageVerificationID = token
+        verifyingImage = image
+        let verify = verifyArtwork
+        // Do not hold up Music polling, pause, or text updates while the CDN is
+        // slow. A later reconcile publishes the fallback within the RPC budget.
+        imageVerification = Task { [weak self] in
+            let available = await verify(reference)
+            guard !Task.isCancelled else { return }
+            await self?.finishImageCheck(image, available: available, token: token)
+        }
+    }
+
+    private func finishImageCheck(_ image: String, available: Bool, token: UUID) {
+        guard imageVerificationID == token else { return }
+        if imageChecks.count >= 128, let oldest = imageChecks.min(by: { $0.value.expires < $1.value.expires })?.key {
+            imageChecks[oldest] = nil
+        }
+        // A broken proxy must not cause repeated uploads or a request each poll.
+        imageChecks[image] = ImageCheck(available: available, expires: Date().addingTimeInterval(available ? 3600 : 300))
+        imageVerification = nil
+        imageVerificationID = nil
+        verifyingImage = nil
+        status.artwork = available ? .available : .unavailable
+    }
+
+    private func cancelImageVerification() {
+        imageVerification?.cancel()
+        imageVerification = nil
+        imageVerificationID = nil
+        verifyingImage = nil
+    }
     public func retry() { nextConnection = .distantPast }
     public func disconnect(clear: Bool, revision: UInt64? = nil) {
         if let revision {
             guard revision >= latestRevision else { return }
             latestRevision = revision
         }
+        cancelImageVerification()
         if clear, let socket, status.accepted != nil {
             let nonce = UUID().uuidString
             let deadline = Date().addingTimeInterval(0.5)
@@ -256,6 +341,7 @@ public actor DiscordPublisher {
         }
         socket?.close(); socket = nil
         hasAcknowledgedState = false
+        acceptedImageReference = nil
         status = .init()
         nextConnection = .distantPast
     }
