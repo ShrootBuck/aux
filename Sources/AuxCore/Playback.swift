@@ -40,14 +40,10 @@ public struct PlaybackSnapshot: Equatable, Sendable {
 /// Retain the anchor on ordinary polls; reset on seeking, repeat, or a state change.
 public struct PlaybackTimeline: Sendable {
     public private(set) var snapshot = PlaybackSnapshot(state: .notRunning)
-    public private(set) var pausedAt: Date?
     public init() {}
     @discardableResult
     public mutating func accept(_ incoming: PlaybackSnapshot, force: Bool = false) -> PlaybackSnapshot {
         let sameTrack = snapshot.track?.identity == incoming.track?.identity
-        if incoming.state == .paused {
-            if snapshot.state != .paused || !sameTrack { pausedAt = incoming.sampledAt }
-        } else { pausedAt = nil }
         if !force, sameTrack, incoming.state == .playing, snapshot.state == .playing,
            abs(snapshot.position(at: incoming.sampledAt) - incoming.position) < 1.5 { return snapshot }
         snapshot = incoming
@@ -55,15 +51,10 @@ public struct PlaybackTimeline: Sendable {
     }
 }
 
-public enum PauseBehavior: String, CaseIterable, Sendable {
-    case hide, fiveMinutes
-    public var label: String { self == .hide ? "Hide immediately" : "Keep for 5 minutes" }
-}
-
 public enum PresenceHeadline: String, CaseIterable, Sendable {
     case song, artist, application
     public var label: String {
-        switch self { case .song: return "Song name"; case .artist: return "Artist"; case .application: return "App name" }
+        switch self { case .song: return "Song name"; case .artist: return "Artist"; case .application: return "Apple Music" }
     }
     public var displayType: Int {
         switch self { case .song: return 2; case .artist: return 1; case .application: return 0 }
@@ -72,10 +63,8 @@ public enum PresenceHeadline: String, CaseIterable, Sendable {
 
 public struct PresenceOptions: Sendable {
     public var enabled: Bool
-    public var pauseBehavior: PauseBehavior
     public var headline: PresenceHeadline
-    public var showAlbum: Bool
-    public init(enabled: Bool = true, pauseBehavior: PauseBehavior = .hide, headline: PresenceHeadline = .song, showAlbum: Bool = true) {
-        self.enabled = enabled; self.pauseBehavior = pauseBehavior; self.headline = headline; self.showAlbum = showAlbum
+    public init(enabled: Bool = true, headline: PresenceHeadline = .song) {
+        self.enabled = enabled; self.headline = headline
     }
 }

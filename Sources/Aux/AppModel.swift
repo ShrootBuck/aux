@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 import Combine
-import ImageIO
 import AuxCore
 
 @MainActor
@@ -11,7 +10,8 @@ final class AppModel: ObservableObject {
     @Published var snapshot = PlaybackSnapshot(state: .notRunning)
     @Published var publication = PublicationStatus()
     @Published var artwork: NSImage?
-    @Published var accent = Color(red: 0.97, green: 0.43, blue: 0.28)
+    @Published var showingSettings = false
+    @Published var musicConnected = false
     @Published var musicError: String?
     @Published var permissionDenied = false
     @Published var artworkStatus = ""
@@ -50,17 +50,25 @@ final class AppModel: ObservableObject {
         if preview { loadPreview() }
     }
 
+    var musicAccessTitle: String {
+        if permissionDenied { return "Access denied" }
+        if musicConnected { return "Connected" }
+        if !settings.musicAccessRequested { return "Not connected" }
+        if musicError != nil { return "Needs attention" }
+        if snapshot.state == .notRunning { return "Apple Music is closed" }
+        return "Connecting…"
+    }
+
     var statusTitle: String {
         if isPreview { return "Design preview" }
         if !settings.musicAccessRequested { return "Connect Apple Music" }
         if permissionDenied { return "Music access needed" }
         if musicError != nil { return "Waiting for Music" }
         if !settings.sharingEnabled { return publication.accepted == nil ? "Sharing is off" : "Turning sharing off…" }
-        if !settings.hasApplicationID { return "Set up Discord" }
         if sleeping { return "Mac is sleeping" }
         if publication.connection != .connected { return "Waiting for Discord" }
         if publication.pending { return "Updating Discord…" }
-        if publication.accepted != nil { return snapshot.state == .paused ? "Sharing paused track" : "Sharing on Discord" }
+        if publication.accepted != nil { return snapshot.state == .paused ? "Hiding activity…" : "Sharing on Discord" }
         switch snapshot.state {
         case .notRunning: return "Apple Music is closed"
         case .stopped: return "Ready when you play"
@@ -69,10 +77,10 @@ final class AppModel: ObservableObject {
         }
     }
     var statusColor: Color {
-        if isPreview { return accent }
+        if isPreview { return .accentColor }
         if !settings.sharingEnabled { return .secondary }
         if publication.connection == .connected, publication.accepted != nil, !publication.pending { return .green }
-        if !settings.musicAccessRequested || permissionDenied || !settings.hasApplicationID || musicError != nil { return .orange }
+        if !settings.musicAccessRequested || permissionDenied || musicError != nil { return .orange }
         return .secondary
     }
     var isSharing: Bool { !isPreview && publication.connection == .connected && publication.accepted != nil }
@@ -125,14 +133,18 @@ final class AppModel: ObservableObject {
                 snapshot = timeline.accept(observed, force: forceTimeline)
                 forceTimeline = false
                 musicError = nil; permissionDenied = false
+                musicConnected = observed.state != .notRunning
                 nextObservation = Date().addingTimeInterval(snapshot.state == .playing ? 1 : 4)
             } catch MusicError.trackChanged {
                 guard !stopped, !sleeping, ownLifecycle == lifecycle else { return }
+                musicConnected = true
+                musicError = nil; permissionDenied = false
                 // Clear potentially stale data until the next consistent observation.
                 snapshot = timeline.accept(.init(state: .stopped))
                 nextObservation = .distantPast
             } catch {
                 guard !stopped, !sleeping, ownLifecycle == lifecycle else { return }
+                musicConnected = false
                 musicError = error.localizedDescription
                 if case MusicError.permissionDenied = error { permissionDenied = true }
                 snapshot = timeline.accept(.init(state: .stopped))
@@ -148,8 +160,8 @@ final class AppModel: ObservableObject {
         guard !isPreview, !stopped, !sleeping else { return }
         revision &+= 1
         let ownRevision = revision
-        let desired = sleeping || musicError != nil ? nil : PresencePayload.make(snapshot: snapshot, pausedAt: timeline.pausedAt, extras: extras, options: settings.options)
-        let result = await publisher.reconcile(desired, applicationID: settings.applicationID, revision: ownRevision)
+        let desired = sleeping || musicError != nil ? nil : PresencePayload.make(snapshot: snapshot, extras: extras, options: settings.options)
+        let result = await publisher.reconcile(desired, applicationID: SettingsStore.applicationID, revision: ownRevision)
         guard !stopped, !sleeping, ownRevision == revision else { return }
         publication = result
     }
@@ -166,7 +178,6 @@ final class AppModel: ObservableObject {
         guard let track = snapshot.track else {
             enrichment?.cancel(); enrichment = nil
             imageIdentity = ""; enrichmentKey = ""; artwork = nil; extras = nil; localArtwork = nil; artworkStatus = ""
-            accent = Color(red: 0.97, green: 0.43, blue: 0.28)
             return
         }
         let key = track.identity + "|" + settings.country
@@ -176,7 +187,7 @@ final class AppModel: ObservableObject {
         enrichmentKey = key
         imageIdentity = track.identity
         imageRetryAt = .distantFuture
-        if newTrack { artwork = nil; localArtwork = nil; extras = nil; accent = Color(red: 0.97, green: 0.43, blue: 0.28) }
+        if newTrack { artwork = nil; localArtwork = nil; extras = nil }
         let country = settings.country
         artworkStatus = "Finding artwork…"
         enrichment = Task { [weak self] in
@@ -217,15 +228,6 @@ final class AppModel: ObservableObject {
 
     private func setArtwork(_ data: Data) {
         artwork = NSImage(data: data)
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return }
-        var pixel = [UInt8](repeating: 0, count: 4)
-        if let context = CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-            context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-            let color = NSColor(red: CGFloat(pixel[0]) / 255, green: CGFloat(pixel[1]) / 255, blue: CGFloat(pixel[2]) / 255, alpha: 1)
-            if let hsb = color.usingColorSpace(.deviceRGB) {
-                accent = Color(nsColor: NSColor(hue: hsb.hueComponent, saturation: max(0.3, min(0.7, hsb.saturationComponent)), brightness: max(0.7, hsb.brightnessComponent), alpha: 1))
-            }
-        }
     }
 
     func connectMusic() { settings.musicAccessRequested = true; permissionDenied = false; requestRefresh() }
@@ -279,9 +281,10 @@ final class AppModel: ObservableObject {
         snapshot = .init(state: state == "paused" ? .paused : .playing, track: track, position: 83)
         if state == "empty" { snapshot = .init(state: .stopped) }
         settings.musicAccessRequested = true
+        musicConnected = true
         settings.sharingEnabled = true
         publication.connection = state == "disconnected" ? .waiting : .connected
-        publication.accepted = PresencePayload.make(snapshot: snapshot, pausedAt: Date(), extras: nil, options: .init(pauseBehavior: .fiveMinutes))
+        publication.accepted = PresencePayload.make(snapshot: snapshot, extras: nil, options: .init())
         artworkStatus = "Preview artwork"
     }
 }

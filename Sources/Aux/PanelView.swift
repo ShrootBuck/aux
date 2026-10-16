@@ -2,7 +2,7 @@ import SwiftUI
 import AuxCore
 
 struct AuxMark: View {
-    var color: Color = Color(red: 0.98, green: 0.46, blue: 0.30)
+    var color: Color = .accentColor
     var body: some View {
         HStack(spacing: 3) {
             ForEach(Array([11.0, 22, 30, 17].enumerated()), id: \.offset) { _, height in
@@ -63,9 +63,9 @@ struct PanelView: View {
         .background {
             ZStack(alignment: .top) {
                 Color(nsColor: .windowBackgroundColor)
-                model.accent.opacity(0.035)
+                Color.accentColor.opacity(0.035)
                     .mask(LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom))
-                Ellipse().fill(model.accent.opacity(scheme == .dark ? 0.08 : 0.07)).frame(width: 290, height: 250).blur(radius: 65).offset(y: 50)
+                Ellipse().fill(Color.accentColor.opacity(scheme == .dark ? 0.08 : 0.07)).frame(width: 290, height: 250).blur(radius: 65).offset(y: 50)
             }
         }
     }
@@ -79,12 +79,6 @@ struct PanelView: View {
             AuxMark().scaleEffect(0.6).frame(width: 19, height: 20)
             Text("aux").font(.system(size: 24, weight: .bold, design: .rounded)).tracking(-1.1)
             Spacer()
-            if model.isSharing {
-                HStack(spacing: 5) { Circle().fill(.green).frame(width: 5, height: 5); Text("LIVE").font(.system(size: 9, weight: .semibold)).tracking(1.1) }
-                    .padding(.horizontal, 9).padding(.vertical, 6)
-                    .background(.green.opacity(0.10), in: Capsule())
-                    .accessibilityLabel("Sharing on Discord")
-            }
             Button(action: openSettings) { Image(systemName: "gearshape").font(.system(size: 15)) }
                 .buttonStyle(QuietButtonStyle()).help("Settings · ⌘,").accessibilityLabel("Settings")
         }
@@ -155,7 +149,7 @@ struct PanelView: View {
                 Label(model.permissionDenied ? "Open System Settings" : (!settings.musicAccessRequested ? "Connect Music" : "Open Music"), systemImage: model.permissionDenied ? "lock.open" : "music.note")
                     .font(.system(size: 12, weight: .medium)).padding(.horizontal, 10).padding(.vertical, 5)
             }
-            .buttonStyle(.borderedProminent).tint(model.accent).padding(.top, 5)
+            .buttonStyle(.borderedProminent).padding(.top, 5)
         }
         .frame(maxWidth: .infinity)
     }
@@ -164,7 +158,7 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 10) {
                 Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(settings.sharingEnabled ? model.accent : .secondary)
+                    .foregroundStyle(settings.sharingEnabled ? Color.accentColor : .secondary)
                     .frame(width: 30)
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Share on Discord").font(.system(size: 12, weight: .semibold))
@@ -173,14 +167,10 @@ struct PanelView: View {
                     }
                 }
                 Spacer(minLength: 3)
-                Toggle("Share on Discord", isOn: $settings.sharingEnabled).labelsHidden().toggleStyle(.switch).controlSize(.small).tint(model.accent)
+                Toggle("Share on Discord", isOn: $settings.sharingEnabled).labelsHidden().toggleStyle(.switch).controlSize(.small)
                     .disabled(model.isPreview)
             }
-            if !settings.hasApplicationID, !model.isPreview {
-                Button(action: openSettings) { HStack { Text("Add your Discord application ID"); Spacer(); Image(systemName: "arrow.up.right") }.font(.system(size: 11, weight: .medium)) }
-                    .buttonStyle(.plain).foregroundStyle(model.accent)
-                    .padding(.top, 2)
-            }
+
         }
         .padding(14)
         .background(.primary.opacity(scheme == .dark ? 0.045 : 0.035), in: RoundedRectangle(cornerRadius: 13))
@@ -194,7 +184,7 @@ struct PanelView: View {
             Spacer()
             if model.isPreview { Text("PREVIEW").font(.system(size: 8, weight: .semibold)).tracking(1).foregroundStyle(.tertiary) }
             Menu {
-                Button("Reconnect Discord") { model.retryDiscord() }.disabled(!settings.hasApplicationID)
+                Button("Reconnect Discord") { model.retryDiscord() }
                 Button("Settings…", action: openSettings)
                 Divider()
                 Button("Quit Aux", action: quit).keyboardShortcut("q")

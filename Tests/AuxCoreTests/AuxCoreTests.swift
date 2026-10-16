@@ -23,25 +23,34 @@ struct AuxCoreTests {
         let wake = timeline.accept(.init(state: .playing, track: track, position: 120.5, sampledAt: epoch.addingTimeInterval(8)), force: true)
         #expect(wake.sampledAt == epoch.addingTimeInterval(8))
     }
-    @Test func testPauseExpiryDoesNotExtendOnEachPoll() {
+    @Test func testPauseAlwaysHidesAndResumeRestoresPresence() {
         var timeline = PlaybackTimeline()
-        _ = timeline.accept(.init(state: .paused, track: track, position: 30, sampledAt: epoch))
-        _ = timeline.accept(.init(state: .paused, track: track, position: 30, sampledAt: epoch.addingTimeInterval(200)))
-        #expect(timeline.pausedAt == epoch)
-        let options = PresenceOptions(pauseBehavior: .fiveMinutes)
-        let payload = PresencePayload.make(snapshot: timeline.snapshot, pausedAt: timeline.pausedAt, extras: nil, options: options, now: epoch.addingTimeInterval(299))
-        #expect(payload != nil)
-        #expect(payload?.timestamps == nil)
-        #expect(PresencePayload.make(snapshot: timeline.snapshot, pausedAt: timeline.pausedAt, extras: nil, options: options, now: epoch.addingTimeInterval(301)) == nil)
+        for state in [PlaybackState.playing, .paused, .paused, .playing] {
+            let snapshot = timeline.accept(.init(state: state, track: track, position: 30, sampledAt: epoch))
+            let payload = PresencePayload.make(snapshot: snapshot, extras: nil, options: .init())
+            #expect((payload != nil) == (state == .playing))
+        }
+    }
+    @Test func testAppleMusicNameAndArtistOnlyStatusPreserveAlbumArtwork() throws {
+        let extras = TrackExtras(artworkURL: URL(string: "https://is1-ssl.mzstatic.com/cover.jpg"))
+        for headline in PresenceHeadline.allCases {
+            let payload = try #require(PresencePayload.make(snapshot: .init(state: .playing, track: track), extras: extras, options: .init(headline: headline)))
+            #expect(payload.name == "Apple Music")
+            #expect(payload.state == "Radiohead")
+            #expect(payload.assets?.large_text == "Kid A")
+            #expect(payload.status_display_type == headline.displayType)
+            let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? [String: Any])
+            #expect(json["name"] as? String == "Apple Music")
+        }
     }
     @Test func testDisabledAndStoppedNeverPublish() {
         let playing = PlaybackSnapshot(state: .playing, track: track, sampledAt: epoch)
-        #expect(PresencePayload.make(snapshot: playing, pausedAt: nil, extras: nil, options: .init(enabled: false)) == nil)
-        #expect(PresencePayload.make(snapshot: .init(state: .stopped, track: track), pausedAt: nil, extras: nil, options: .init()) == nil)
+        #expect(PresencePayload.make(snapshot: playing, extras: nil, options: .init(enabled: false)) == nil)
+        #expect(PresencePayload.make(snapshot: .init(state: .stopped, track: track), extras: nil, options: .init()) == nil)
     }
     @Test func testProgressAndTimestampsAreBoundedAndUseSeconds() {
         let snapshot = PlaybackSnapshot(state: .playing, track: track, position: 50, sampledAt: epoch)
-        let payload = PresencePayload.make(snapshot: snapshot, pausedAt: nil, extras: nil, options: .init())!
+        let payload = PresencePayload.make(snapshot: snapshot, extras: nil, options: .init())!
         #expect(payload.timestamps?.start == 1_699_999_950)
         #expect(payload.timestamps?.end == 1_700_000_201)
         #expect(snapshot.position(at: epoch.addingTimeInterval(500)) == 251)
@@ -68,7 +77,7 @@ struct AuxCoreTests {
         #expect(CatalogMatcher.bestMatch(for: juicy, results: [result]) == nil)
         #expect(CatalogMatcher.albumMatch(for: juicy, results: [result]) == result)
         let extras = TrackExtras(artworkURL: result.artworkUrl100)
-        let payload = PresencePayload.make(snapshot: .init(state: .playing, track: juicy), pausedAt: nil, extras: extras, options: .init())
+        let payload = PresencePayload.make(snapshot: .init(state: .playing, track: juicy), extras: extras, options: .init())
         #expect(payload?.assets?.large_image == result.artworkUrl100?.absoluteString)
         #expect(payload?.details_url == nil)
         #expect(payload?.buttons == nil)

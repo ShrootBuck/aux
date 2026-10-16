@@ -26,20 +26,20 @@ The default signature is ad hoc. To sign with your own installed identity, set `
 
 ## Use
 
-1. Install Aux from the downloaded disk image (or move a source-built `build/Aux.app` to Applications), then open it. Aux lives in the menu bar; it does not normally open a Dock window. Quit an older running copy before opening a newly built version.
+1. Install Aux from the downloaded disk image (or move a source-built `build/Aux.app` to Applications), then open it. Aux lives in the menu bar; all of its UI stays in the menu bar popover. Quit an older running copy before opening a newly built version.
 2. Open Apple Music and the Discord desktop app on the same Mac.
 3. Click Aux's waveform in the menu bar and choose **Connect Music**. Allow Aux to control Music when macOS asks. If access was denied, enable Music for Aux in System Settings → Privacy & Security → Automation.
 4. Play a song in Apple Music and leave **Share on Discord** enabled in Aux. Discord's activity privacy settings must also allow your activity to be displayed.
-5. This build includes Aux's public Discord Application ID. No ID entry is needed. You can override it in Settings if you want to use another application. Aux does not require a bot token, client secret, or Discord password.
+5. This build includes Aux's public Discord Application ID. No ID entry is needed. Aux does not require a bot token, client secret, or Discord password.
 
-Aux is registered in the [Discord Developer Portal](https://discord.com/developers/applications/1560471305843646565/information) with public application ID `1560471305843646565`. The default is stored in `Resources/Info.plist`; a saved application ID takes precedence.
+Aux is registered in the [Discord Developer Portal](https://discord.com/developers/applications/1560471305843646565/information) with public application ID `1560471305843646565`. The shared ID is hardcoded in `Sources/Aux/SettingsStore.swift`.
 
-The panel shows album artwork, track information, elapsed time, and a sharing switch. Aux only reads Music; it has no playback controls. Right-click the menu bar icon for sharing, settings, and quit. Settings live on one page, including opt-in launch at login. Appearance always follows macOS.
+The panel shows album artwork, track information, elapsed time, and a sharing switch. Aux only reads Music; it has no playback controls. Right-click the menu bar icon for sharing, settings, and quit. Settings open inside the same popover, including opt-in launch at login. Appearance always follows macOS.
 
 ## Presence and artwork
 
-- The status headline can show the song, artist, or application. Album details are optional.
-- Pausing hides the activity by default. Alternatively, retain the paused track for up to five minutes without an advancing timer.
+- The status headline can show the song, artist, or Apple Music. The status contains only the artist; the album remains on the artwork.
+- Pausing hides the activity immediately.
 - Disabling sharing clears the activity. Sleep, quitting, track changes, seeks, and Discord restarts have explicit lifecycle handling.
 - Local artwork stays on your Mac. Song links require a matching title, artist, album, and available duration. Cover artwork can fall back to an exact artist-and-album match when Apple's song title or duration differs from your library.
 - Public Apple artwork and listening links can be included in the Discord activity. A failed artwork lookup does not block song text.
@@ -67,7 +67,7 @@ The sibling Deno project informed the small Apple Music → Discord pipeline. Th
 open build/Aux.app --args --preview
 ```
 
-`--preview` displays fictional sample content without polling Music or publishing to Discord. `--window` shows the live panel as a standalone development window. Normal launches use the menu bar only.
+`--preview` displays fictional sample content in the menu bar popover without polling Music or publishing to Discord. Use `open build/Aux.app --args --show` to launch the live development build with its popover open. All launches use the menu bar only.
 
 Automated checks cover core logic, both Mac architectures, and the packaged downloads. They do not validate live Music/Discord sessions. Generated app bundles are attached to releases and excluded from the source repository.
 

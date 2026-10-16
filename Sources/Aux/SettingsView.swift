@@ -5,7 +5,6 @@ import AuxCore
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsStore
-    @ViewState private var applicationID = ""
     @ViewState private var copied = false
     @Environment(\.colorScheme) private var scheme
     private var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev" }
@@ -14,17 +13,17 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 13) {
-                AuxMark().frame(width: 38, height: 44)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Aux").font(.system(size: 25, weight: .bold, design: .rounded)).tracking(-0.6)
-                    Text("Settings").font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button { model.showingSettings = false } label: {
+                    Image(systemName: "chevron.left").font(.system(size: 14, weight: .semibold))
                 }
+                .buttonStyle(QuietButtonStyle()).help("Back").accessibilityLabel("Back to player")
+                Text("Settings").font(.system(size: 18, weight: .semibold))
                 Spacer()
                 Text(version).font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
-            }.padding(.bottom, 23)
+            }.padding(.bottom, 16)
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 12) {
                     connection
                     presence
                     sectionCard("Startup", symbol: "power") {
@@ -42,53 +41,41 @@ struct SettingsView: View {
                 Text(model.statusTitle).font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer()
                 Button(copied ? "Copied" : "Copy diagnostics") {
-                    let text = "Aux \(version)\nmacOS \(ProcessInfo.processInfo.operatingSystemVersionString)\nMusic: \(model.snapshot.state.rawValue)\nMusic access: \(model.permissionDenied ? "denied" : (settings.musicAccessRequested ? "requested" : "not requested"))\nDiscord: \(model.publication.connection.rawValue)\nSharing enabled: \(settings.sharingEnabled)\nAccepted activity: \(model.publication.accepted != nil)\nArtwork: \(model.artworkStatus)\nError: \(model.musicError ?? model.publication.message ?? "none")"
+                    let text = "Aux \(version)\nmacOS \(ProcessInfo.processInfo.operatingSystemVersionString)\nMusic: \(model.snapshot.state.rawValue)\nMusic access: \(model.musicAccessTitle)\nDiscord: \(model.publication.connection.rawValue)\nSharing enabled: \(settings.sharingEnabled)\nAccepted activity: \(model.publication.accepted != nil)\nArtwork: \(model.artworkStatus)\nError: \(model.musicError ?? model.publication.message ?? "none")"
                     NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
                     copied = true
                 }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(.secondary)
             }.padding(.top, 13).overlay(alignment: .top) { Divider() }
         }
-        .padding(27).frame(width: 540, height: 680)
+        .padding(18).frame(width: 368, height: min(640, max(360, (NSScreen.main?.visibleFrame.height ?? 900) - 80)))
         .background(Color(nsColor: .windowBackgroundColor))
-        .tint(model.accent)
-        .onAppear { applicationID = settings.applicationID; settings.refreshLoginStatus() }
+        .onAppear { settings.refreshLoginStatus() }
     }
 
     private var connection: some View {
         Group {
             sectionCard("Apple Music", symbol: "music.note") {
                 HStack {
-                    Text(!settings.musicAccessRequested ? "Playback access" : (model.permissionDenied ? "Access denied" : (model.musicError == nil ? "Access requested" : "Needs attention")))
-                        .font(.system(size: 12))
+                    Text(model.musicAccessTitle).font(.system(size: 12))
                     Spacer()
-                    Button(model.permissionDenied ? "Open Settings" : "Connect") {
-                        if model.permissionDenied { model.openAutomationSettings() } else { model.connectMusic(); model.openMusic() }
-                    }.controlSize(.small).disabled(model.isPreview)
+                    if !model.musicConnected {
+                        Button(model.permissionDenied ? "Open Settings" : "Connect") {
+                            if model.permissionDenied { model.openAutomationSettings() } else { model.connectMusic(); model.openMusic() }
+                        }.controlSize(.small).disabled(model.isPreview)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    }
                 }
                 Text("Aux reads the current track and artwork from Music.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             sectionCard("Discord", symbol: "antenna.radiowaves.left.and.right") {
-                Text("Application ID").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    TextField("17–20 digit application ID", text: $applicationID)
-                        .textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
-                        .onSubmit(saveID)
-                        .accessibilityLabel("Discord application ID")
-                    Button("Save", action: saveID).buttonStyle(.borderedProminent).controlSize(.small)
-                        .disabled(!idIsValid || applicationID.trimmingCharacters(in: .whitespacesAndNewlines) == settings.applicationID || model.isPreview)
-                }
-                if !idIsValid {
-                    Text("Use the numeric application ID from the General Information page.").font(.system(size: 10)).foregroundStyle(.orange)
-                }
                 HStack {
-                    Link("Discord Developer Portal ↗", destination: URL(string: "https://discord.com/developers/applications")!)
-                        .font(.system(size: 11, weight: .medium))
+                    Text(model.publication.connection == .connected ? "Connected" : "Waiting for Discord")
+                        .font(.system(size: 12))
                     Spacer()
-                    if settings.hasApplicationID { Button("Reconnect") { model.retryDiscord() }.controlSize(.small) }
+                    Button("Reconnect") { model.retryDiscord() }.controlSize(.small).disabled(model.isPreview)
                 }
-                Text("Aux includes its application ID. Discord must be running on this Mac with activity sharing enabled.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let user = model.publication.userName { Label("Connected as \(user)", systemImage: "checkmark.circle.fill").font(.system(size: 11)).foregroundStyle(.green) }
                 if let message = model.publication.message { Text(message).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
@@ -100,8 +87,6 @@ struct SettingsView: View {
                 Toggle("Share on Discord", isOn: $settings.sharingEnabled)
                 Divider()
                 Picker("Listening to", selection: $settings.headline) { ForEach(PresenceHeadline.allCases, id: \.self) { Text($0.label).tag($0) } }
-                Picker("When paused", selection: $settings.pauseBehavior) { ForEach(PauseBehavior.allCases, id: \.self) { Text($0.label).tag($0) } }
-                Toggle("Include album name", isOn: $settings.showAlbum)
             }
             sectionCard("Artwork", symbol: "square.stack") {
                 HStack {
@@ -117,16 +102,6 @@ struct SettingsView: View {
             }
         }.font(.system(size: 12)).toggleStyle(.switch).controlSize(.small).disabled(model.isPreview)
     }
-    private var idIsValid: Bool {
-        let value = applicationID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty || DiscordPublisher.validApplicationID(value)
-    }
-    private func saveID() {
-        guard idIsValid, !model.isPreview else { return }
-        applicationID = applicationID.trimmingCharacters(in: .whitespacesAndNewlines)
-        settings.applicationID = applicationID
-        model.retryDiscord()
-    }
     private var storefronts: [(code: String, name: String)] {
         let common = [("US", "United States"), ("GB", "United Kingdom"), ("CA", "Canada"), ("AU", "Australia"), ("TR", "Türkiye"), ("JP", "Japan"), ("DE", "Germany"), ("FR", "France")]
         return common.contains(where: { $0.0 == settings.country }) ? common : [(settings.country, settings.country)] + common
@@ -136,7 +111,7 @@ struct SettingsView: View {
             Label(title, systemImage: symbol).font(.system(size: 12, weight: .semibold))
             VStack(alignment: .leading, spacing: 12, content: content)
         }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
         .background(.primary.opacity(scheme == .dark ? 0.04 : 0.025), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.primary.opacity(0.06), lineWidth: 0.5))
     }

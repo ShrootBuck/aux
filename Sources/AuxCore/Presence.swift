@@ -14,6 +14,7 @@ public struct PresencePayload: Codable, Equatable, Sendable {
     public struct Timestamps: Codable, Equatable, Sendable { public var start: Int64; public var end: Int64 }
     public struct Assets: Codable, Equatable, Sendable { public var large_image: String?; public var large_text: String?; public var large_url: String? }
     public struct Button: Codable, Equatable, Sendable { public var label: String; public var url: String }
+    public var name = "Apple Music"
     public var type = 2
     public var status_display_type: Int
     public var details: String
@@ -24,22 +25,14 @@ public struct PresencePayload: Codable, Equatable, Sendable {
     public var assets: Assets?
     public var buttons: [Button]?
 
-    public static func make(snapshot: PlaybackSnapshot, pausedAt: Date?, extras: TrackExtras?, options: PresenceOptions, now: Date = Date()) -> Self? {
-        guard options.enabled, let track = snapshot.track, !track.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        switch snapshot.state {
-        case .playing: break
-        case .paused:
-            guard options.pauseBehavior == .fiveMinutes, let pausedAt, now.timeIntervalSince(pausedAt) < 300 else { return nil }
-        case .notRunning, .stopped: return nil
-        }
-        let isPaused = snapshot.state == .paused
-        let state = [track.artist, options.showAlbum ? track.album : ""].filter { !$0.isEmpty }.joined(separator: " · ")
-        var payload = Self(status_display_type: options.headline.displayType, details: safeText(track.title), state: state.isEmpty ? nil : safeText(isPaused ? "Paused · \(state)" : state))
-        if !isPaused, track.duration > 0 {
+    public static func make(snapshot: PlaybackSnapshot, extras: TrackExtras?, options: PresenceOptions) -> Self? {
+        guard options.enabled, snapshot.state == .playing, let track = snapshot.track,
+              !track.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        var payload = Self(status_display_type: options.headline.displayType, details: safeText(track.title), state: track.artist.isEmpty ? nil : safeText(track.artist))
+        if track.duration > 0 {
             let start = snapshot.sampledAt.timeIntervalSince1970 - min(snapshot.position, track.duration)
             payload.timestamps = .init(start: Int64(start.rounded(.down)), end: Int64((start + track.duration).rounded(.down)))
         }
-        if isPaused && state.isEmpty { payload.state = "Paused" }
         if let extras {
             payload.details_url = appleURL(extras.trackURL)
             payload.state_url = appleURL(extras.artistURL)

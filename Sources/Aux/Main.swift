@@ -20,8 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let model: AppModel
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
-    private var settingsWindow: NSWindow?
-    private var previewWindow: NSWindow?
     private var subscription: AnyCancellable?
     private var terminating = false
 
@@ -45,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
-        let root = PanelView(model: model, openSettings: { [weak self] in self?.showSettings() }, quit: { NSApp.terminate(nil) })
+        let root = MenuBarView(model: model, quit: { NSApp.terminate(nil) })
         let host = NSHostingController(rootView: root)
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
@@ -54,16 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         subscription = model.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.updateStatusItem() } }
         NSApp.appearance = nil
         model.start()
-        if model.isPreview || args.contains("--window") {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 368, height: 580), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            window.title = model.isPreview ? "Aux · Design preview" : "Aux"
-            window.contentViewController = NSHostingController(rootView: root)
-            window.isReleasedWhenClosed = false
-            window.center(); window.makeKeyAndOrderFront(nil)
-            previewWindow = window
-            NSApp.activate(ignoringOtherApps: true)
-            model.panelVisible = true
-        } else if !model.settings.didLaunchBefore || args.contains("--show") {
+        if model.isPreview || !model.settings.didLaunchBefore || args.contains("--show") {
             DispatchQueue.main.async { self.showPanel() }
         }
         model.settings.markLaunched()
@@ -123,17 +112,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         button.setAccessibilityValue(model.statusTitle)
     }
     @objc func showSettings() {
-        popover?.performClose(nil)
-        if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 680), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            window.title = "Aux Settings"
-            window.titlebarAppearsTransparent = true
-            window.contentViewController = NSHostingController(rootView: SettingsView(model: model))
-            window.isReleasedWhenClosed = false
-            window.center()
-            settingsWindow = window
+        model.showingSettings = true
+        showPanel()
+    }
+}
+
+struct MenuBarView: View {
+    @ObservedObject var model: AppModel
+    var quit: () -> Void
+
+    var body: some View {
+        Group {
+            if model.showingSettings {
+                SettingsView(model: model)
+            } else {
+                PanelView(model: model, openSettings: { model.showingSettings = true }, quit: quit)
+            }
         }
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 }
