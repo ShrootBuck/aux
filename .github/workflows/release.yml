@@ -1,0 +1,72 @@
+name: Release
+run-name: Release Aux ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version, for example 0.1.1 (no v prefix)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Serialize releases so concurrent runs cannot move Latest backwards.
+concurrency:
+  group: aux-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate version and source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python3 scripts/release.py preflight "$RELEASE_VERSION"
+
+  checks:
+    needs: preflight
+    uses: ./.github/workflows/checks.yml
+
+  package-and-publish:
+    needs: [preflight, checks]
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      RELEASE_VERSION: ${{ inputs.version }}
+      AUX_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and validate universal downloads
+        run: ./scripts/package.sh "$RELEASE_VERSION"
+      - name: Save packaged downloads
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Aux-${{ inputs.version }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish complete GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py publish "$RELEASE_VERSION"
+      - name: Write download links
+        run: |
+          {
+            echo "## Aux $RELEASE_VERSION is published"
+            echo "- [Release](https://github.com/$GITHUB_REPOSITORY/releases/tag/v$RELEASE_VERSION)"
+            echo "- [Download Aux.dmg](https://github.com/$GITHUB_REPOSITORY/releases/latest/download/Aux.dmg)"
+            echo "- Apple Silicon + Intel, macOS 14+. Ad-hoc signed; not Apple-notarized."
+          } >> "$GITHUB_STEP_SUMMARY"

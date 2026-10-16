@@ -1,5 +1,8 @@
 .build/
 build/
+dist/
+.venv-release/
+__pycache__/
 .swiftpm/
 .DS_Store
 *.xcuserstate
