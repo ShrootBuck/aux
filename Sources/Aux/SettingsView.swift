@@ -98,7 +98,7 @@ struct SettingsView: View {
                     }.labelsHidden().frame(width: 165)
                 }
                 Toggle("Share local artwork", isOn: $settings.shareLocalArtwork)
-                Text("When Apple has no cover, upload a small copy to Catbox for Discord. Anyone with its link can view it. Turning this off stops future uploads; existing uploads remain on Catbox.")
+                Text("Prefer your Music library's cover on Discord by uploading a small copy to Catbox. Fall back to Apple's catalog if unavailable. Anyone with its link can view it. Turning this off stops uploads; existing copies remain on Catbox.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if !model.artworkStatus.isEmpty { Text(model.artworkStatus).font(.system(size: 10)).foregroundStyle(.tertiary) }
             }

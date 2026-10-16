@@ -75,6 +75,7 @@ struct PanelView: View {
     private var header: some View {
         HStack(spacing: 7) {
             AuxMark().scaleEffect(0.6).frame(width: 19, height: 20)
+                .offset(y: 2.5) // Center optically on the lowercase wordmark, not its line box.
             Text("aux").font(.system(size: 24, weight: .bold, design: .rounded)).tracking(-1.1)
             Spacer()
             Button(action: openSettings) { Image(systemName: "gearshape").font(.system(size: 15)) }
