@@ -96,7 +96,8 @@ struct SettingsView: View {
                         ForEach(storefronts, id: \.code) { Text($0.name).tag($0.code) }
                     }.labelsHidden().frame(width: 165)
                 }
-                Text("Covers come directly from Apple's catalog. Local images are never uploaded.")
+                Toggle("Share local artwork", isOn: $settings.shareLocalArtwork)
+                Text("When Apple has no cover, upload a small copy to Catbox for Discord. Anyone with its link can view it. Turning this off stops future uploads; existing uploads remain on Catbox.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if !model.artworkStatus.isEmpty { Text(model.artworkStatus).font(.system(size: 10)).foregroundStyle(.tertiary) }
             }

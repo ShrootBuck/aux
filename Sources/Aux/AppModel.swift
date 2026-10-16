@@ -22,6 +22,7 @@ final class AppModel: ObservableObject {
     private let music = MusicBridge()
     private let publisher = DiscordPublisher()
     private let catalog: CatalogResolver
+    private let uploadedArtwork: CatboxArtwork
     private let images = ArtworkService()
     private var timeline = PlaybackTimeline()
     private var timer: Timer?
@@ -45,6 +46,7 @@ final class AppModel: ObservableObject {
         settings = SettingsStore(preview: preview)
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Aux", isDirectory: true)
         catalog = CatalogResolver(directory: directory)
+        uploadedArtwork = CatboxArtwork(directory: directory)
         settings.onChange = { [weak self] in self?.settingsChanged() }
         settingsSubscription = settings.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         if preview { loadPreview() }
@@ -168,6 +170,9 @@ final class AppModel: ObservableObject {
 
     private func settingsChanged() {
         guard !isPreview, !stopped else { return }
+        if !settings.shareLocalArtwork, extras?.artworkURL?.host == "files.catbox.moe" {
+            extras?.artworkURL = nil
+        }
         refreshArtworkIfNeeded()
         Task { await publish() }
         requestRefresh()
@@ -180,7 +185,8 @@ final class AppModel: ObservableObject {
             imageIdentity = ""; enrichmentKey = ""; artwork = nil; extras = nil; localArtwork = nil; artworkStatus = ""
             return
         }
-        let key = track.identity + "|" + settings.country
+        let uploadAllowed = settings.shareLocalArtwork && settings.sharingEnabled && snapshot.state == .playing
+        let key = track.identity + "|" + settings.country + "|\(uploadAllowed)|\(settings.shareLocalArtwork)"
         let newTrack = imageIdentity != track.identity
         guard key != enrichmentKey || (enrichment == nil && Date() >= imageRetryAt) else { return }
         enrichment?.cancel()
@@ -200,29 +206,52 @@ final class AppModel: ObservableObject {
                     self.setArtwork(thumbnail)
                 }
             }
-            do {
-                let resolved = try await self.catalog.resolve(track, country: country) ?? TrackExtras()
+            var resolved = TrackExtras()
+            var catalogUnavailable = false
+            do { resolved = try await self.catalog.resolve(track, country: country) ?? TrackExtras() }
+            catch { catalogUnavailable = true }
+            guard !Task.isCancelled, self.enrichmentKey == key else { return }
+            if let url = resolved.artworkURL {
+                // A returned URL can still be broken. Check it even when the
+                // panel already has a local cover, then fall back if needed.
+                let image = try? await self.images.download(url)
                 guard !Task.isCancelled, self.enrichmentKey == key else { return }
-                if let url = resolved.artworkURL {
+                if let image {
                     self.artworkStatus = "Apple catalog artwork"
-                    if self.artwork == nil, let image = try? await self.images.download(url) {
-                        guard !Task.isCancelled, self.enrichmentKey == key else { return }
-                        self.setArtwork(image)
-                    }
+                    if self.artwork == nil { self.setArtwork(image) }
                 } else {
-                    self.artworkStatus = "No Apple catalog cover · local artwork stays in Aux"
-                    self.imageRetryAt = Date().addingTimeInterval(3600)
+                    resolved.artworkURL = nil
+                    catalogUnavailable = true
                 }
-                guard !Task.isCancelled, self.enrichmentKey == key else { return }
-                self.extras = resolved
-                self.enrichment = nil
-                await self.publish()
-            } catch {
-                guard !Task.isCancelled, self.enrichmentKey == key else { return }
-                self.artworkStatus = "Artwork lookup unavailable"
-                self.imageRetryAt = Date().addingTimeInterval(45)
-                self.enrichment = nil
             }
+            if resolved.artworkURL == nil {
+                self.imageRetryAt = Date().addingTimeInterval(catalogUnavailable || self.localArtwork == nil ? 45 : 3600)
+                if uploadAllowed, let local = self.localArtwork {
+                    self.artworkStatus = "Uploading cover to Catbox…"
+                    do {
+                        let url = try await self.uploadedArtwork.resolve(local)
+                        guard !Task.isCancelled, self.enrichmentKey == key else { return }
+                        resolved.artworkURL = url
+                        self.artworkStatus = "Local artwork shared via Catbox"
+                    } catch {
+                        guard !Task.isCancelled, self.enrichmentKey == key else { return }
+                        if case CatboxError.retryAfter(let date) = error {
+                            self.imageRetryAt = date
+                        } else if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                            // A previous song may have canceled a shared upload
+                            // for this same cover just as the new song joined it.
+                            self.imageRetryAt = Date().addingTimeInterval(5)
+                        } else { self.imageRetryAt = Date().addingTimeInterval(15 * 60) }
+                        self.artworkStatus = "Catbox upload unavailable · will retry"
+                    }
+                } else if self.localArtwork != nil {
+                    self.artworkStatus = "No Apple cover · local artwork stays in Aux"
+                } else { self.artworkStatus = "No artwork available" }
+            }
+            guard !Task.isCancelled, self.enrichmentKey == key else { return }
+            self.extras = resolved
+            self.enrichment = nil
+            await self.publish()
         }
     }
 

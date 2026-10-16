@@ -10,7 +10,7 @@ public actor ArtworkService {
         configuration.timeoutIntervalForResource = 15
         session = URLSession(configuration: configuration)
     }
-    public nonisolated static func thumbnail(_ data: Data, size: Int = 700) -> Data? {
+    public nonisolated static func thumbnail(_ data: Data, size: Int = 700, quality: Double = 0.88) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -19,9 +19,17 @@ public actor ArtworkService {
               ] as CFDictionary) else { return nil }
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.88] as CFDictionary)
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return output as Data
+    }
+    /// Export pixels only: no original filename, EXIF, or other source metadata.
+    public nonisolated static func uploadThumbnail(_ data: Data) -> Data? {
+        guard !data.isEmpty, data.count <= 20_000_000 else { return nil }
+        for size in [700, 512, 320] {
+            if let jpeg = thumbnail(data, size: size, quality: 0.8), jpeg.count <= 250_000 { return jpeg }
+        }
+        return nil
     }
     public func download(_ url: URL) async throws -> Data? {
         guard url.scheme == "https" else { return nil }

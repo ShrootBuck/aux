@@ -55,14 +55,14 @@ public actor CatalogResolver {
     private let session: URLSession
     private var nextRequest = Date.distantPast
 
-    public init(directory: URL) {
-        // The previous cache contains misses caused by requiring a song match
-        // for album art. Don't preserve those misses after upgrading.
-        cacheURL = directory.appendingPathComponent("catalog-v2.json")
+    public init(directory: URL, session: URLSession? = nil) {
+        // v2 discarded matching album covers in song search results. Retry
+        // those cached misses with the corrected artwork fallback.
+        cacheURL = directory.appendingPathComponent("catalog-v3.json")
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 6
         configuration.timeoutIntervalForResource = 10
-        session = URLSession(configuration: configuration)
+        self.session = session ?? URLSession(configuration: configuration)
         if let data = try? Data(contentsOf: cacheURL), let saved = try? JSONDecoder().decode([String: Entry].self, from: data) {
             entries = saved.filter { $0.value.expiresAt > Date() }
         }
@@ -77,11 +77,17 @@ public actor CatalogResolver {
             TrackExtras(artworkURL: $0.artworkUrl100.map(Self.largeArtwork), trackURL: $0.trackViewUrl, artistURL: $0.artistViewUrl, albumURL: $0.collectionViewUrl)
         }
         if extras?.artworkURL == nil {
-            let albums = try await search(term: "\(track.artist) \(track.album)", entity: "album", country: country)
-            if let album = CatalogMatcher.albumMatch(for: track, results: albums) {
+            // Apple can return other songs from the right album while omitting
+            // the album from its album search. Their cover is still valid.
+            var album = CatalogMatcher.albumMatch(for: track, results: songs)
+            if album == nil {
+                let albums = try await search(term: "\(track.artist) \(track.album)", entity: "album", country: country)
+                album = CatalogMatcher.albumMatch(for: track, results: albums)
+            }
+            if let album {
                 if extras == nil { extras = TrackExtras() }
                 extras?.artworkURL = album.artworkUrl100.map(Self.largeArtwork)
-                extras?.albumURL = album.collectionViewUrl
+                extras?.albumURL = album.collectionViewUrl.flatMap(Self.albumURL)
                 // Never manufacture a song link from an album-only match.
             }
         }
@@ -109,6 +115,13 @@ public actor CatalogResolver {
         try Task.checkCancellation()
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
         return try JSONDecoder().decode(Response.self, from: data).results
+    }
+    private static func albumURL(_ url: URL) -> URL? {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        // Song results sometimes include a track selector in collectionViewUrl.
+        // A cover-only match must open the album, not that other song.
+        components.queryItems = components.queryItems?.filter { $0.name != "i" }
+        return components.url
     }
     private static func largeArtwork(_ url: URL) -> URL {
         guard url.host?.hasSuffix("mzstatic.com") == true else { return url }

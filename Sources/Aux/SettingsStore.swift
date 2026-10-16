@@ -12,6 +12,7 @@ final class SettingsStore: ObservableObject {
     @Published var musicAccessRequested: Bool { didSet { save("musicAccessRequested", musicAccessRequested) } }
     @Published var headline: PresenceHeadline { didSet { save("headline", headline.rawValue) } }
     @Published var country: String { didSet { save("country", country) } }
+    @Published var shareLocalArtwork: Bool { didSet { save("shareLocalArtwork", shareLocalArtwork) } }
     @Published var launchAtLogin = false
     @Published var loginError: String?
 
@@ -21,6 +22,7 @@ final class SettingsStore: ObservableObject {
         musicAccessRequested = defaults.bool(forKey: "musicAccessRequested")
         headline = PresenceHeadline(rawValue: defaults.string(forKey: "headline") ?? "") ?? .song
         country = defaults.string(forKey: "country") ?? Locale.current.region?.identifier ?? "US"
+        shareLocalArtwork = defaults.bool(forKey: "shareLocalArtwork")
         refreshLoginStatus()
     }
     private func save(_ key: String, _ value: Any) { defaults.set(value, forKey: key); onChange?() }

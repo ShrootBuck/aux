@@ -41,11 +41,15 @@ The panel shows album artwork, track information, elapsed time, and a sharing sw
 - The status headline can show the song, artist, or Apple Music. The status contains only the artist; the album remains on the artwork.
 - Pausing hides the activity immediately.
 - Disabling sharing clears the activity. Sleep, quitting, track changes, seeks, and Discord restarts have explicit lifecycle handling.
-- Local artwork stays on your Mac. Song links require a matching title, artist, album, and available duration. Cover artwork can fall back to an exact artist-and-album match when Apple's song title or duration differs from your library.
+- Song links require a matching title, artist, album, and available duration. Cover artwork can fall back to an exact artist-and-album match from either song or album search results when Apple omits the recording or its title or duration differs from your library.
 - Public Apple artwork and listening links can be included in the Discord activity. A failed artwork lookup does not block song text.
-- No third-party image uploads. If Apple has no matching album cover, local artwork remains visible only in Aux.
+- Local artwork stays on your Mac by default. Enable **Settings → Artwork → Share local artwork** to use [Catbox](https://catbox.moe/) when Apple's lookup fails, has no cover, or returns an unavailable image. This works for imported local tracks too, provided Music exposes their embedded artwork.
+- Catbox receives only a resized JPEG (at most 700 pixels and 250 KB), with source metadata removed and a SHA-256 filename. Uploads happen only while playback and Discord sharing are enabled. They are anonymous, directly from your Mac, with no Aux server or shared API credential.
+- Anyone with a Catbox image URL can view it. Turning the setting off stops uploads and removes the Catbox cover from the current activity; it does not delete previously uploaded files. Catbox currently removes anonymous files after two years without access, and offers no anonymous deletion API. See its [API](https://catbox.moe/tools.php) and [FAQ](https://catbox.moe/faq.php). Commercial use requires Catbox's approval.
+- A persistent SHA-256 cache reuses the URL for the same uploaded image across tracks and app restarts. Cached links are checked after 30 days; only a definite 404/410 triggers re-upload. Concurrent requests for one image share an upload. The app limits attempts to one per five seconds, 60 per hour, and 200 per day, with a 15-minute cooldown after upload failures. These are client courtesy limits, not server-enforced abuse protection.
+- Catbox chose the same URL for identical bytes in a live test, but its public API does not guarantee global deduplication or let Aux choose the hosted URL. Aux guarantees local reuse of cached content; copies on different Macs depend on Catbox's behavior.
 
-Preferences use macOS UserDefaults. Catalog matches are cached under `~/Library/Application Support/Aux/`. There is no analytics, Aux account, backend, or listening-history database. Apple catalog requests disclose the queried song metadata to Apple; Discord receives the activity while sharing is enabled.
+Preferences use macOS UserDefaults. Catalog matches and Catbox image URLs are cached under `~/Library/Application Support/Aux/`. There is no analytics, Aux account, backend, or listening-history database. Apple catalog requests disclose the queried song metadata to Apple; Discord receives the activity while sharing is enabled. If local artwork sharing is enabled, Catbox receives the cover image and your connection's IP address.
 
 ## Source
 
