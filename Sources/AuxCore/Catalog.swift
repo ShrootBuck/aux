@@ -1,0 +1,89 @@
+import Foundation
+
+public struct CatalogResult: Codable, Equatable, Sendable {
+    public var trackName: String?
+    public var artistName: String?
+    public var collectionName: String?
+    public var trackTimeMillis: Double?
+    public var artworkUrl100: URL?
+    public var trackViewUrl: URL?
+    public var artistViewUrl: URL?
+    public var collectionViewUrl: URL?
+
+    public init(trackName: String, artistName: String, collectionName: String, trackTimeMillis: Double? = nil, artworkUrl100: URL? = nil, trackViewUrl: URL? = nil) {
+        self.trackName = trackName; self.artistName = artistName; self.collectionName = collectionName
+        self.trackTimeMillis = trackTimeMillis; self.artworkUrl100 = artworkUrl100; self.trackViewUrl = trackViewUrl
+    }
+}
+
+public enum CatalogMatcher {
+    public static func normalize(_ value: String) -> String {
+        value.folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }.joined(separator: " ")
+    }
+    public static func bestMatch(for track: Track, results: [CatalogResult]) -> CatalogResult? {
+        // Versions matter. Don't strip "live", "remix", "deluxe", etc. A single
+        // search hit must pass exactly the same checks as a page full of hits.
+        guard !normalize(track.artist).isEmpty, !normalize(track.album).isEmpty else { return nil }
+        return results.filter {
+            normalize($0.trackName ?? "") == normalize(track.title) &&
+            normalize($0.artistName ?? "") == normalize(track.artist) &&
+            normalize($0.collectionName ?? "") == normalize(track.album) &&
+            (track.duration <= 0 || $0.trackTimeMillis == nil || abs(($0.trackTimeMillis! / 1000) - track.duration) <= 3)
+        }.min {
+            abs(($0.trackTimeMillis ?? track.duration * 1000) / 1000 - track.duration) < abs(($1.trackTimeMillis ?? track.duration * 1000) / 1000 - track.duration)
+        }
+    }
+}
+
+public actor CatalogResolver {
+    private struct Entry: Codable { var extras: TrackExtras?; var expiresAt: Date }
+    private struct Response: Decodable { var results: [CatalogResult] }
+    private var entries: [String: Entry] = [:]
+    private let cacheURL: URL
+    private let session: URLSession
+    private var nextRequest = Date.distantPast
+
+    public init(directory: URL) {
+        cacheURL = directory.appendingPathComponent("catalog-v1.json")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 6
+        configuration.timeoutIntervalForResource = 10
+        session = URLSession(configuration: configuration)
+        if let data = try? Data(contentsOf: cacheURL), let saved = try? JSONDecoder().decode([String: Entry].self, from: data) {
+            entries = saved.filter { $0.value.expiresAt > Date() }
+        }
+    }
+    public func resolve(_ track: Track, country: String) async throws -> TrackExtras? {
+        let country = country.uppercased()
+        let key = country + "|" + track.identity
+        if let entry = entries[key], entry.expiresAt > Date() { return entry.extras }
+        // Canceled lookups don't reserve future slots and delay the current song.
+        while Date() < nextRequest { try await Task.sleep(for: .seconds(max(0, nextRequest.timeIntervalSinceNow))) }
+        try Task.checkCancellation()
+        nextRequest = Date().addingTimeInterval(3.1)
+        var components = URLComponents(string: "https://itunes.apple.com/search")!
+        components.queryItems = [
+            .init(name: "term", value: "\(track.title) \(track.artist) \(track.album)"),
+            .init(name: "media", value: "music"), .init(name: "entity", value: "song"),
+            .init(name: "country", value: country), .init(name: "limit", value: "15")
+        ]
+        let (data, response) = try await session.data(from: components.url!)
+        try Task.checkCancellation()
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        let match = CatalogMatcher.bestMatch(for: track, results: try JSONDecoder().decode(Response.self, from: data).results)
+        let extras = match.map {
+            TrackExtras(artworkURL: $0.artworkUrl100.map(Self.largeArtwork), trackURL: $0.trackViewUrl, artistURL: $0.artistViewUrl, albumURL: $0.collectionViewUrl)
+        }
+        entries[key] = Entry(extras: extras, expiresAt: Date().addingTimeInterval(extras == nil ? 3600 : 7 * 86400))
+        entries = entries.filter { $0.value.expiresAt > Date() }
+        if entries.count > 400 { entries = Dictionary(uniqueKeysWithValues: entries.sorted { $0.value.expiresAt > $1.value.expiresAt }.prefix(300).map { ($0.key, $0.value) }) }
+        try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let encoded = try? JSONEncoder().encode(entries) { try? encoded.write(to: cacheURL, options: .atomic) }
+        return extras
+    }
+    private static func largeArtwork(_ url: URL) -> URL {
+        guard url.host?.hasSuffix("mzstatic.com") == true else { return url }
+        return URL(string: url.absoluteString.replacingOccurrences(of: "100x100bb", with: "600x600bb")) ?? url
+    }
+}

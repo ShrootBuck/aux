@@ -1,0 +1,304 @@
+import SwiftUI
+import AuxCore
+
+struct AuxMark: View {
+    var color: Color = Color(red: 0.98, green: 0.46, blue: 0.30)
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(Array([11.0, 22, 30, 17].enumerated()), id: \.offset) { _, height in
+                Capsule().fill(color).frame(width: 4, height: height)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+struct QuietButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var scheme
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.primary.opacity(configuration.isPressed ? 0.5 : 0.8))
+            .padding(7)
+            .background(.primary.opacity(configuration.isPressed ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+    }
+}
+
+struct PanelView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var settings: SettingsStore
+    var openSettings: () -> Void = {}
+    var quit: () -> Void = {}
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ViewState private var previewExpanded = false
+    @ViewState private var seekPosition: Double?
+
+    init(model: AppModel, openSettings: @escaping () -> Void = {}, quit: @escaping () -> Void = {}) {
+        self.model = model; settings = model.settings; self.openSettings = openSettings; self.quit = quit
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header.padding(.horizontal, 22).padding(.top, 17).padding(.bottom, 14)
+            ScrollView {
+                VStack(spacing: 0) {
+                    cover.padding(.top, 2).padding(.bottom, 18)
+                    if let track = model.snapshot.track {
+                        trackInfo(track)
+                        progress(track).padding(.top, 14)
+                        transport.padding(.top, 9).padding(.bottom, 18)
+                    } else {
+                        emptyState.padding(.bottom, 20)
+                    }
+                    sharing
+                    if settings.hasApplicationID || model.isPreview { preview.padding(.top, 10) }
+                    if let error = model.musicError, !model.permissionDenied {
+                        Text(error).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 10)
+                    }
+                }
+                .padding(.horizontal, 22)
+                .padding(.bottom, 10)
+            }
+            .scrollIndicators(.hidden)
+            .frame(height: panelBodyHeight)
+            footer.padding(.horizontal, 19).padding(.vertical, 9)
+        }
+        .frame(width: 368)
+        .background {
+            ZStack(alignment: .top) {
+                Color(nsColor: .windowBackgroundColor)
+                model.accent.opacity(0.035)
+                    .mask(LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom))
+                Ellipse().fill(model.accent.opacity(scheme == .dark ? 0.08 : 0.07)).frame(width: 290, height: 250).blur(radius: 65).offset(y: 50)
+            }
+        }
+        .preferredColorScheme(settings.appearance.colorScheme)
+    }
+    private var panelBodyHeight: CGFloat {
+        let preferred: CGFloat = model.snapshot.track == nil ? 430 : (previewExpanded ? 665 : 607)
+        return min(preferred, max(260, (NSScreen.main?.visibleFrame.height ?? 900) - 140))
+    }
+
+    private var header: some View {
+        HStack(spacing: 7) {
+            AuxMark().scaleEffect(0.6).frame(width: 19, height: 20)
+            Text("aux").font(.system(size: 24, weight: .bold, design: .rounded)).tracking(-1.1)
+            Spacer()
+            if model.isSharing {
+                HStack(spacing: 5) { Circle().fill(.green).frame(width: 5, height: 5); Text("LIVE").font(.system(size: 9, weight: .semibold)).tracking(1.1) }
+                    .padding(.horizontal, 9).padding(.vertical, 6)
+                    .background(.green.opacity(0.10), in: Capsule())
+                    .accessibilityLabel("Sharing on Discord")
+            }
+            Button(action: openSettings) { Image(systemName: "gearshape").font(.system(size: 15)) }
+                .buttonStyle(QuietButtonStyle()).help("Settings · ⌘,").accessibilityLabel("Settings")
+        }
+    }
+
+    private var cover: some View {
+        Group {
+            if let artwork = model.artwork {
+                Image(nsImage: artwork).resizable().aspectRatio(contentMode: .fit)
+            } else if model.isPreview, model.snapshot.track != nil {
+                PreviewCover()
+            } else {
+                ZStack {
+                    LinearGradient(colors: [Color(white: scheme == .dark ? 0.20 : 0.91), Color(white: scheme == .dark ? 0.11 : 0.80)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    ForEach(0..<5) { i in Circle().stroke(.primary.opacity(0.035), lineWidth: 1).frame(width: CGFloat(90 + i * 36)) }
+                    Circle().fill(.primary.opacity(0.06)).frame(width: 84, height: 84)
+                    Image(systemName: "music.note").font(.system(size: 35, weight: .light)).foregroundStyle(.secondary.opacity(0.7))
+                }
+            }
+        }
+        .frame(width: model.snapshot.track == nil ? 218 : 278, height: model.snapshot.track == nil ? 218 : 278)
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.white.opacity(scheme == .dark ? 0.10 : 0.35), lineWidth: 0.5))
+        .shadow(color: .black.opacity(scheme == .dark ? 0.34 : 0.18), radius: 17, x: 0, y: 10)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(model.snapshot.track.map { "Artwork for \($0.album)" } ?? "No artwork")
+    }
+
+    private func trackInfo(_ track: Track) -> some View {
+        VStack(spacing: 5) {
+            Text(track.title).font(.system(size: 21, weight: .semibold)).tracking(-0.5)
+                .lineLimit(2).multilineTextAlignment(.center).help(track.title)
+            Text(track.artist.isEmpty ? "Unknown artist" : track.artist).font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                .lineLimit(1).help(track.artist)
+            if !track.album.isEmpty { Text(track.album).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1).help(track.album) }
+        }
+        .frame(maxWidth: .infinity).frame(minHeight: 67)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func progress(_ track: Track) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let position = seekPosition ?? model.snapshot.position(at: context.date)
+            VStack(spacing: 5) {
+                Slider(value: Binding(get: { seekPosition ?? model.snapshot.position(at: context.date) }, set: { seekPosition = $0 }), in: 0...max(1, track.duration), onEditingChanged: { editing in
+                    if !editing, let position = seekPosition { model.control(.seek(position)); seekPosition = nil }
+                })
+                .controlSize(.mini).tint(scheme == .dark ? .white.opacity(0.8) : .primary.opacity(0.65))
+                .disabled(!model.canControl || track.duration <= 0).accessibilityLabel("Playback position")
+                HStack {
+                    Text(formatTime(position))
+                    Spacer()
+                    Text(track.duration > 0 ? "−" + formatTime(max(0, track.duration - position)) : "LIVE")
+                }
+                .font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var transport: some View {
+        HStack(spacing: 33) {
+            Button { model.control(.previous) } label: { Image(systemName: "backward.end.fill").font(.system(size: 18)) }
+                .accessibilityLabel("Previous track").help("Previous track")
+            Button { model.control(.playPause) } label: {
+                Image(systemName: model.snapshot.state == .playing ? "pause.fill" : "play.fill")
+                    .font(.system(size: 21, weight: .semibold))
+                    .frame(width: 48, height: 48)
+                    .background(.primary.opacity(0.07), in: Circle())
+            }
+            .accessibilityLabel(model.snapshot.state == .playing ? "Pause" : "Play").help("Play / pause")
+            Button { model.control(.next) } label: { Image(systemName: "forward.end.fill").font(.system(size: 18)) }
+                .accessibilityLabel("Next track").help("Next track")
+        }
+        .buttonStyle(.plain).disabled(!model.canControl || model.controlBusy)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Text(!settings.musicAccessRequested || model.permissionDenied ? "Connect Apple Music" : "Nothing playing")
+                .font(.system(size: 20, weight: .semibold)).tracking(-0.4)
+            if !settings.musicAccessRequested || model.permissionDenied {
+                Text(model.permissionDenied ? "Allow Music access in Automation settings." : "Allow Aux to read and control playback.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+            Button {
+                if model.permissionDenied { model.openAutomationSettings() }
+                else if !settings.musicAccessRequested { model.connectMusic() }
+                else { model.openMusic() }
+            } label: {
+                Label(model.permissionDenied ? "Open System Settings" : (!settings.musicAccessRequested ? "Connect Music" : "Open Music"), systemImage: model.permissionDenied ? "lock.open" : "music.note")
+                    .font(.system(size: 12, weight: .medium)).padding(.horizontal, 10).padding(.vertical, 5)
+            }
+            .buttonStyle(.borderedProminent).tint(model.accent).padding(.top, 5)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var sharing: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 10) {
+                Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(settings.sharingEnabled ? model.accent : .secondary)
+                    .frame(width: 30)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Share on Discord").font(.system(size: 12, weight: .semibold))
+                    HStack(spacing: 4) {
+                        Circle().fill(model.statusColor).frame(width: 4, height: 4)
+                        Text(model.statusTitle).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 3)
+                Toggle("Share on Discord", isOn: $settings.sharingEnabled).labelsHidden().toggleStyle(.switch).controlSize(.small).tint(model.accent)
+                    .disabled(model.isPreview)
+            }
+            if !settings.hasApplicationID, !model.isPreview {
+                Button(action: openSettings) { HStack { Text("Add your Discord application ID"); Spacer(); Image(systemName: "arrow.up.right") }.font(.system(size: 11, weight: .medium)) }
+                    .buttonStyle(.plain).foregroundStyle(model.accent)
+                    .padding(.top, 2)
+            }
+        }
+        .padding(14)
+        .background(.primary.opacity(scheme == .dark ? 0.045 : 0.035), in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.primary.opacity(0.045), lineWidth: 0.5))
+    }
+
+    private var preview: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { previewExpanded.toggle() }
+            } label: {
+                HStack {
+                    Text("Discord preview").font(.system(size: 11))
+                    Spacer()
+                    Image(systemName: previewExpanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                }.foregroundStyle(.secondary).padding(.vertical, 4)
+            }.buttonStyle(.plain).accessibilityLabel("Toggle Discord preview")
+            if previewExpanded {
+                if let payload = model.publication.accepted {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("LISTENING").font(.system(size: 9, weight: .bold)).tracking(1).foregroundStyle(.secondary)
+                        HStack(alignment: .top, spacing: 10) {
+                            Group {
+                                if let url = payload.assets?.large_image, let imageURL = URL(string: url) {
+                                    AsyncImage(url: imageURL) { image in image.resizable().aspectRatio(contentMode: .fill) } placeholder: { Image(systemName: "music.note") }
+                                } else { Image(systemName: "music.note").font(.system(size: 24)).foregroundStyle(.secondary) }
+                            }
+                            .frame(width: 52, height: 52).background(.primary.opacity(0.05)).clipShape(RoundedRectangle(cornerRadius: 7))
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(payload.details).font(.system(size: 12, weight: .semibold)).lineLimit(2)
+                                if let state = payload.state { Text(state).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2) }
+                                if payload.timestamps != nil { Text("Playback timer enabled").font(.system(size: 9)).foregroundStyle(.tertiary) }
+                            }
+                        }
+                        Text(model.isPreview ? "Sample only" : "Last accepted by Discord").font(.system(size: 9)).foregroundStyle(.tertiary)
+                    }
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                } else {
+                    Text(model.publication.connection == .connected ? "No activity is being shared." : "Connect Discord to see the accepted activity.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).padding(.vertical, 5)
+                }
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Button { model.openMusic() } label: { Label("Apple Music", systemImage: "music.note").font(.system(size: 10, weight: .medium)) }
+                .buttonStyle(QuietButtonStyle()).help("Open Apple Music")
+            Spacer()
+            if model.isPreview { Text("PREVIEW").font(.system(size: 8, weight: .semibold)).tracking(1).foregroundStyle(.tertiary) }
+            Menu {
+                Button("Reconnect Discord") { model.retryDiscord() }.disabled(!settings.hasApplicationID)
+                Button("Settings…", action: openSettings)
+                Divider()
+                Button("Quit Aux", action: quit).keyboardShortcut("q")
+            } label: { Image(systemName: "ellipsis").font(.system(size: 15)).frame(width: 24, height: 20) }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("More options").accessibilityLabel("More options")
+        }
+        .overlay(alignment: .top) { Rectangle().fill(.primary.opacity(0.06)).frame(height: 0.5) }
+    }
+}
+
+func formatTime(_ seconds: TimeInterval) -> String {
+    let value = max(0, Int(seconds.isFinite ? seconds : 0))
+    return "\(value / 60):\(String(format: "%02d", value % 60))"
+}
+
+/// Original procedural artwork for development previews; never sent to Discord.
+struct PreviewCover: View {
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color(red: 0.94, green: 0.88, blue: 0.72)
+                Circle().fill(LinearGradient(colors: [Color(red: 0.99, green: 0.61, blue: 0.25), Color(red: 0.85, green: 0.23, blue: 0.20)], startPoint: .top, endPoint: .bottom))
+                    .frame(width: proxy.size.width * 0.72).offset(y: -12)
+                ForEach(0..<22) { i in
+                    Rectangle().fill(Color(red: 0.30, green: 0.36, blue: 0.30).opacity(0.08 + Double(i) * 0.014))
+                        .frame(height: CGFloat(i) * 0.30 + 1).offset(y: CGFloat(i) * 6 + 2)
+                }
+                VStack(alignment: .leading) {
+                    Text("ASTER").font(.system(size: proxy.size.width * 0.065, weight: .bold, design: .monospaced)).tracking(6)
+                    Spacer()
+                    Text("SOFT FOCUS").font(.system(size: proxy.size.width * 0.035, weight: .medium, design: .monospaced)).tracking(3)
+                }
+                .foregroundStyle(Color(red: 0.16, green: 0.20, blue: 0.17)).padding(proxy.size.width * 0.085).frame(maxWidth: .infinity, alignment: .leading)
+            }.clipped()
+        }
+    }
+}
