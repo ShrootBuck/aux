@@ -71,10 +71,11 @@ struct SettingsView: View {
             }
             sectionCard("Discord", symbol: "antenna.radiowaves.left.and.right") {
                 HStack {
-                    Text(model.publication.connection == .connected ? "Connected" : "Waiting for Discord")
+                    Text(model.publication.connection == .paused ? "Disconnected while paused" : (model.publication.connection == .connected ? "Connected" : "Waiting for Discord"))
                         .font(.system(size: 12))
                     Spacer()
-                    Button("Reconnect") { model.retryDiscord() }.controlSize(.small).disabled(model.isPreview)
+                    Button("Reconnect") { model.retryDiscord() }.controlSize(.small)
+                        .disabled(model.isPreview || model.publication.connection == .paused)
                 }
                 if let user = model.publication.userName { Label("Connected as \(user)", systemImage: "checkmark.circle.fill").font(.system(size: 11)).foregroundStyle(.green) }
                 if let message = model.publication.message { Text(message).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }

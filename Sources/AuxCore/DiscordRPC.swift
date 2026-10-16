@@ -155,7 +155,7 @@ final class DiscordSocket {
 }
 
 public struct PublicationStatus: Equatable, Sendable {
-    public enum Connection: String, Sendable { case needsSetup, waiting, connected }
+    public enum Connection: String, Sendable { case needsSetup, waiting, connected, paused }
     public var connection: Connection = .needsSetup
     public var accepted: PresencePayload?
     public var acceptedAt: Date?
@@ -166,6 +166,7 @@ public struct PublicationStatus: Equatable, Sendable {
 }
 
 public actor DiscordPublisher {
+    private let connect: @Sendable () throws -> DiscordSocket
     private var socket: DiscordSocket?
     private var applicationID = ""
     private var latestRevision: UInt64 = 0
@@ -174,14 +175,24 @@ public actor DiscordPublisher {
     private var hasAcknowledgedState = false
     private var budget = PublicationBudget()
     private var status = PublicationStatus()
-    public init() {}
+    public init() { connect = { try DiscordSocket.connect() } }
+    init(connect: @escaping @Sendable () throws -> DiscordSocket) { self.connect = connect }
     public static func validApplicationID(_ value: String) -> Bool {
         (17...20).contains(value.count) && value.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
     }
 
-    public func reconcile(_ desired: PresencePayload?, applicationID id: String, revision: UInt64) -> PublicationStatus {
+    public func reconcile(_ desired: PresencePayload?, applicationID id: String, revision: UInt64, paused: Bool = false) -> PublicationStatus {
         guard revision >= latestRevision else { return status }
         latestRevision = revision
+        // Pausing ends the IPC session without sending SET_ACTIVITY(null).
+        // Check before maintenance/reconnection so polls, artwork completions,
+        // and manual retries cannot reopen the socket while playback is paused.
+        if paused {
+            disconnect(clear: false)
+            status.connection = .paused
+            failures = 0
+            return status
+        }
         if applicationID != id {
             disconnect(clear: true)
             applicationID = id
@@ -194,7 +205,7 @@ public actor DiscordPublisher {
             if socket == nil {
                 status.connection = .waiting
                 guard Date() >= nextConnection else { return status }
-                let connection = try DiscordSocket.connect()
+                let connection = try connect()
                 let deadline = Date().addingTimeInterval(2)
                 try connection.sendJSON(opcode: 0, object: ["v": 1, "client_id": id], until: deadline)
                 let response = try connection.response(until: deadline)

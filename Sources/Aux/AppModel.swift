@@ -68,13 +68,14 @@ final class AppModel: ObservableObject {
         if musicError != nil { return "Waiting for Music" }
         if !settings.sharingEnabled { return publication.accepted == nil ? "Sharing is off" : "Turning sharing off…" }
         if sleeping { return "Mac is sleeping" }
+        if publication.connection == .paused { return "Paused · Discord disconnected" }
         if publication.connection != .connected { return "Waiting for Discord" }
         if publication.pending { return "Updating Discord…" }
-        if publication.accepted != nil { return snapshot.state == .paused ? "Hiding activity…" : "Sharing on Discord" }
+        if publication.accepted != nil { return snapshot.state == .paused ? "Disconnecting from Discord…" : "Sharing on Discord" }
         switch snapshot.state {
         case .notRunning: return "Apple Music is closed"
         case .stopped: return "Ready when you play"
-        case .paused: return "Paused · presence hidden"
+        case .paused: return "Paused · Discord disconnected"
         case .playing: return "Connected to Discord"
         }
     }
@@ -163,7 +164,8 @@ final class AppModel: ObservableObject {
         revision &+= 1
         let ownRevision = revision
         let desired = sleeping || musicError != nil ? nil : PresencePayload.make(snapshot: snapshot, extras: extras, options: settings.options)
-        let result = await publisher.reconcile(desired, applicationID: SettingsStore.applicationID, revision: ownRevision)
+        let paused = snapshot.state == .paused && settings.sharingEnabled && musicError == nil
+        let result = await publisher.reconcile(desired, applicationID: SettingsStore.applicationID, revision: ownRevision, paused: paused)
         guard !stopped, !sleeping, ownRevision == revision else { return }
         publication = result
     }
@@ -312,7 +314,7 @@ final class AppModel: ObservableObject {
         settings.musicAccessRequested = true
         musicConnected = true
         settings.sharingEnabled = true
-        publication.connection = state == "disconnected" ? .waiting : .connected
+        publication.connection = state == "paused" ? .paused : (state == "disconnected" ? .waiting : .connected)
         publication.accepted = PresencePayload.make(snapshot: snapshot, extras: nil, options: .init())
         artworkStatus = "Preview artwork"
     }

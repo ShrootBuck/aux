@@ -23,7 +23,7 @@ struct AuxCoreTests {
         let wake = timeline.accept(.init(state: .playing, track: track, position: 120.5, sampledAt: epoch.addingTimeInterval(8)), force: true)
         #expect(wake.sampledAt == epoch.addingTimeInterval(8))
     }
-    @Test func testPauseAlwaysHidesAndResumeRestoresPresence() {
+    @Test func testPausedPlaybackNeverBuildsAnActivityAndResumeRestoresIt() {
         var timeline = PlaybackTimeline()
         for state in [PlaybackState.playing, .paused, .paused, .playing] {
             let snapshot = timeline.accept(.init(state: state, track: track, position: 30, sampledAt: epoch))
