@@ -44,7 +44,7 @@ final class AppModel: ObservableObject {
         isPreview = preview
         settings = SettingsStore(preview: preview)
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Aux", isDirectory: true)
-        artworkResolver = ArtworkResolver(catalog: CatalogResolver(directory: directory), uploads: CatboxArtwork(directory: directory), images: ArtworkService())
+        artworkResolver = ArtworkResolver(catalog: CatalogResolver(directory: directory), uploads: HostedArtwork(directory: directory), images: ArtworkService())
         settings.onChange = { [weak self] in self?.settingsChanged() }
         settingsSubscription = settings.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         if preview { loadPreview() }
@@ -181,7 +181,7 @@ final class AppModel: ObservableObject {
 
     private func settingsChanged() {
         guard !isPreview, !stopped else { return }
-        if !settings.shareLocalArtwork, extras?.artworkURL?.host == "files.catbox.moe" {
+        if !settings.shareLocalArtwork, extras?.artworkURL?.host == HostedArtwork.baseURL.host {
             extras?.artworkURL = nil
         }
         refreshArtworkIfNeeded()
@@ -221,13 +221,16 @@ final class AppModel: ObservableObject {
             if uploadAllowed, self.localArtwork != nil { self.artworkStatus = "Sharing library artwork…" }
             let resolved: ArtworkResolution
             do {
-                resolved = try await self.artworkResolver.resolve(track: track, country: country, localArtwork: self.localArtwork, uploadAllowed: uploadAllowed)
+                resolved = try await self.artworkResolver.resolve(track: track, country: country, localArtwork: self.localArtwork, uploadAllowed: uploadAllowed) { [weak self] url in
+                    guard !Task.isCancelled else { return }
+                    await self?.publishLibraryArtwork(url, key: key)
+                }
             } catch { return } // Cancellation: a newer track or settings change owns enrichment.
             guard !Task.isCancelled, self.enrichmentKey == key else { return }
             self.imageRetryAt = resolved.retryAt
             if self.artwork == nil, let image = resolved.image { self.setArtwork(image) }
             switch resolved.source {
-            case .library: self.artworkStatus = "Library artwork uploaded to Catbox"
+            case .library: self.artworkStatus = "Library artwork hosted by Aux"
             case .catalog:
                 self.artworkStatus = resolved.uploadFailed ? "Apple catalog artwork · local upload will retry" : "Apple catalog artwork"
             case .none:
@@ -235,11 +238,22 @@ final class AppModel: ObservableObject {
                 else if self.localArtwork != nil { self.artworkStatus = "No Apple cover · local artwork stays in Aux" }
                 else { self.artworkStatus = "No artwork available" }
             }
+            if let error = resolved.uploadError { self.artworkStatus += " · " + error }
             self.extras = resolved.extras
             self.fallbackArtworkURL = resolved.fallbackArtworkURL
             self.enrichment = nil
             await self.publish()
         }
+    }
+
+    private func publishLibraryArtwork(_ url: URL, key: String) async {
+        guard !Task.isCancelled, enrichmentKey == key, settings.shareLocalArtwork,
+              settings.sharingEnabled, snapshot.state == .playing else { return }
+        var updated = extras ?? TrackExtras()
+        updated.artworkURL = url
+        extras = updated
+        artworkStatus = "Library artwork hosted by Aux"
+        await publish()
     }
 
     private func setArtwork(_ data: Data) {

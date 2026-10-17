@@ -11,6 +11,16 @@ permissions:
   contents: read
 
 jobs:
+  artwork-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test artwork service
+        run: |
+          python3 -m venv /tmp/artwork-tests
+          /tmp/artwork-tests/bin/pip install -r server/artwork/requirements.txt
+          cd server/artwork
+          /tmp/artwork-tests/bin/python -m unittest -q
   check:
     name: macOS / ${{ matrix.architecture }}
     strategy:

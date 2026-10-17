@@ -8,6 +8,7 @@ public struct ArtworkResolution: Sendable {
     public var retryAt: Date
     public var uploadFailed: Bool
     public var fallbackArtworkURL: URL? = nil
+    public var uploadError: String? = nil
 }
 
 /// Prefer the library's actual cover; catalog matching still supplies song links.
@@ -16,7 +17,7 @@ public struct ArtworkResolver: Sendable {
     private let upload: @Sendable (Data) async throws -> URL
     private let download: @Sendable (URL) async throws -> Data?
 
-    public init(catalog: CatalogResolver, uploads: CatboxArtwork, images: ArtworkService) {
+    public init(catalog: CatalogResolver, uploads: HostedArtwork, images: ArtworkService) {
         self.init(
             lookup: { try await catalog.resolve($0, country: $1) },
             upload: { try await uploads.resolve($0) },
@@ -32,7 +33,8 @@ public struct ArtworkResolver: Sendable {
         self.lookup = lookup; self.upload = upload; self.download = download
     }
 
-    public func resolve(track: Track, country: String, localArtwork: Data?, uploadAllowed: Bool) async throws -> ArtworkResolution {
+    public func resolve(track: Track, country: String, localArtwork: Data?, uploadAllowed: Bool,
+                        onLibraryArtwork: @Sendable (URL) async -> Void = { _ in }) async throws -> ArtworkResolution {
         try Task.checkCancellation()
         // Resolve links alongside the upload, without letting a catalog cover
         // override the library image or making a catalog outage block it.
@@ -40,18 +42,24 @@ public struct ArtworkResolver: Sendable {
         var localURL: URL?
         var retryAt = Date.distantFuture
         var uploadFailed = false
+        var uploadError: String?
         if uploadAllowed, let localArtwork {
-            do { localURL = try await upload(localArtwork) }
+            do {
+                localURL = try await upload(localArtwork)
+                try Task.checkCancellation()
+                if let localURL { await onLibraryArtwork(localURL) }
+            }
             catch {
                 try Task.checkCancellation()
                 uploadFailed = true
-                if case CatboxError.retryAfter(let date) = error {
+                uploadError = error.localizedDescription
+                if case ArtworkUploadError.retryAfter(let date) = error {
                     retryAt = date
                 } else if error is CancellationError || (error as? URLError)?.code == .cancelled {
                     // Another caller can cancel a shared upload. The current
                     // track should retry soon, while using the catalog cover.
                     retryAt = Date().addingTimeInterval(5)
-                } else { retryAt = Date().addingTimeInterval(15 * 60) }
+                } else { retryAt = Date().addingTimeInterval(30) }
             }
         }
         try Task.checkCancellation()
@@ -85,6 +93,6 @@ public struct ArtworkResolver: Sendable {
             retryAt = min(retryAt, Date().addingTimeInterval(3600))
         }
         return ArtworkResolution(extras: extras, image: localArtwork ?? catalogImage, source: source, retryAt: retryAt, uploadFailed: uploadFailed,
-                                 fallbackArtworkURL: source == .library ? catalogArtworkURL : nil)
+                                 fallbackArtworkURL: source == .library ? catalogArtworkURL : nil, uploadError: uploadError)
     }
 }

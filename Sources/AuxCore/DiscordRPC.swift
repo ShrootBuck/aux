@@ -170,12 +170,14 @@ public struct PublicationStatus: Equatable, Sendable {
 
 public actor DiscordPublisher {
     private let connect: @Sendable () throws -> DiscordSocket
-    private let verifyArtwork: @Sendable (String?) async -> Bool
+    private let verifyArtwork: @Sendable (String?) async -> DiscordImageResult
     private struct ImageCheck {
         var available: Bool
         var expires: Date
+        var failure: String?
     }
     private var imageChecks: [String: ImageCheck] = [:]
+    private var imageFailures: [String: Int] = [:]
     private var imageVerification: Task<Void, Never>?
     private var imageVerificationID: UUID?
     private var verifyingImage: String?
@@ -191,12 +193,12 @@ public actor DiscordPublisher {
     public init() {
         connect = { try DiscordSocket.connect() }
         let images = ArtworkService()
-        verifyArtwork = { await images.discordImageAvailable($0) }
+        verifyArtwork = { await images.checkDiscordImage($0) }
     }
     init(connect: @escaping @Sendable () throws -> DiscordSocket,
          verifyArtwork: @escaping @Sendable (String?) async -> Bool = { _ in false }) {
         self.connect = connect
-        self.verifyArtwork = verifyArtwork
+        self.verifyArtwork = { .init(available: await verifyArtwork($0)) }
     }
     public static func validApplicationID(_ value: String) -> Bool {
         (17...20).contains(value.count) && value.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
@@ -232,6 +234,7 @@ public actor DiscordPublisher {
             } else {
                 effective?.assets = nil
                 status.artworkMessage = "Artwork unavailable in Discord · will retry"
+                if let failure = imageChecks[image]?.failure { status.artworkMessage = failure + " · will retry" }
             }
         }
         let image = effective?.assets?.large_image
@@ -301,19 +304,25 @@ public actor DiscordPublisher {
         // Do not hold up Music polling, pause, or text updates while the CDN is
         // slow. A later reconcile publishes the fallback within the RPC budget.
         imageVerification = Task { [weak self] in
-            let available = await verify(reference)
+            let result = await verify(reference)
             guard !Task.isCancelled else { return }
-            await self?.finishImageCheck(image, available: available, token: token)
+            await self?.finishImageCheck(image, result: result, token: token)
         }
     }
 
-    private func finishImageCheck(_ image: String, available: Bool, token: UUID) {
+    private func finishImageCheck(_ image: String, result: DiscordImageResult, token: UUID) {
         guard imageVerificationID == token else { return }
+        let available = result.available
         if imageChecks.count >= 128, let oldest = imageChecks.min(by: { $0.value.expires < $1.value.expires })?.key {
             imageChecks[oldest] = nil
+            imageFailures[oldest] = nil
         }
         // A broken proxy must not cause repeated uploads or a request each poll.
-        imageChecks[image] = ImageCheck(available: available, expires: Date().addingTimeInterval(available ? 3600 : 300))
+        if imageFailures.count >= 128 { imageFailures.removeAll() }
+        let failures = available ? 0 : min(4, (imageFailures[image] ?? 0) + 1)
+        imageFailures[image] = available ? nil : failures
+        let delay: TimeInterval = available ? 3600 : [10.0, 30, 90, 300][failures - 1]
+        imageChecks[image] = ImageCheck(available: available, expires: Date().addingTimeInterval(delay), failure: result.failure)
         imageVerification = nil
         imageVerificationID = nil
         verifyingImage = nil

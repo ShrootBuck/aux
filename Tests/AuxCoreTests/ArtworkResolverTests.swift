@@ -19,6 +19,26 @@ struct ArtworkResolverTests {
         .init(artworkURL: catalogURL, trackURL: URL(string: "https://music.apple.com/us/album/song/123?i=456"), albumURL: URL(string: "https://music.apple.com/us/album/album/123"))
     }
 
+    @Test func libraryCoverPublishesBeforeSlowCatalogLookupCompletes() async throws {
+        let gate = ArtworkGate()
+        let resolver = ArtworkResolver(
+            lookup: { _, _ in
+                // This would deadlock if the library callback waited for catalog.
+                for _ in 0..<100 {
+                    if await gate.published { return catalogExtras }
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+                Issue.record("Catalog was awaited before publishing the cover")
+                return catalogExtras
+            }, upload: { _ in localURL }, download: { _ in remote })
+        let result = try await resolver.resolve(track: track, country: "US", localArtwork: local, uploadAllowed: true) { url in
+            #expect(url == localURL)
+            await gate.publish()
+        }
+        #expect(await gate.published)
+        #expect(result.extras.trackURL == catalogExtras.trackURL)
+    }
+
     @Test func libraryCoverWinsOverDifferentCatalogCoverAndKeepsListeningLinks() async throws {
         let requests = ArtworkRequests()
         let resolver = ArtworkResolver(
@@ -77,20 +97,20 @@ struct ArtworkResolverTests {
         #expect(!result.uploadFailed)
     }
 
-    @Test(arguments: [CatboxError.unavailable, .invalidImage, .invalidResponse])
-    func uploadFailureUsesCatalogWithoutLosingRetry(_ error: CatboxError) async throws {
+    @Test(arguments: [ArtworkUploadError.unavailable, .invalidImage, .invalidResponse])
+    func uploadFailureUsesCatalogWithoutLosingRetry(_ error: ArtworkUploadError) async throws {
         let resolver = ArtworkResolver(lookup: { _, _ in catalogExtras }, upload: { _ in throw error }, download: { _ in remote })
         let result = try await resolver.resolve(track: track, country: "US", localArtwork: local, uploadAllowed: true)
         #expect(result.source == .catalog)
         #expect(result.extras.artworkURL == catalogURL)
         #expect(result.image == local)
         #expect(result.uploadFailed)
-        #expect(result.retryAt.timeIntervalSinceNow > 895 && result.retryAt.timeIntervalSinceNow <= 900)
+        #expect(result.retryAt.timeIntervalSinceNow > 25 && result.retryAt.timeIntervalSinceNow <= 30)
     }
 
     @Test func rateLimitDeadlineSurvivesSuccessfulCatalogFallback() async throws {
         let deadline = Date().addingTimeInterval(120)
-        let resolver = ArtworkResolver(lookup: { _, _ in catalogExtras }, upload: { _ in throw CatboxError.retryAfter(deadline) }, download: { _ in remote })
+        let resolver = ArtworkResolver(lookup: { _, _ in catalogExtras }, upload: { _ in throw ArtworkUploadError.retryAfter(deadline) }, download: { _ in remote })
         let result = try await resolver.resolve(track: track, country: "US", localArtwork: local, uploadAllowed: true)
         #expect(result.source == .catalog)
         #expect(result.retryAt == deadline)
@@ -111,7 +131,7 @@ struct ArtworkResolverTests {
     }
 
     @Test func brokenCatalogCoverIsNotPublishedWhenLocalUploadAlsoFails() async throws {
-        let resolver = ArtworkResolver(lookup: { _, _ in catalogExtras }, upload: { _ in throw CatboxError.unavailable }, download: { _ in nil })
+        let resolver = ArtworkResolver(lookup: { _, _ in catalogExtras }, upload: { _ in throw ArtworkUploadError.unavailable }, download: { _ in nil })
         let result = try await resolver.resolve(track: track, country: "US", localArtwork: local, uploadAllowed: true)
         #expect(result.source == .none)
         #expect(result.extras.artworkURL == nil)
@@ -153,4 +173,9 @@ struct ArtworkResolverTests {
         #expect(result.source == .catalog)
         #expect(result.retryAt.timeIntervalSinceNow > 0 && result.retryAt.timeIntervalSinceNow <= 5)
     }
+}
+
+private actor ArtworkGate {
+    private(set) var published = false
+    func publish() { published = true }
 }

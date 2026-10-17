@@ -5,16 +5,16 @@ import ImageIO
 import UniformTypeIdentifiers
 @testable import AuxCore
 
-private final class CatboxStub: URLProtocol {
+private final class ArtworkUploadStub: URLProtocol {
     private static let lock = NSLock()
-    private static var handler: (URLRequest) -> (Int, String) = { _ in (200, "https://files.catbox.moe/abc123.jpg\n") }
+    private static var handler: (URLRequest) -> (Int, String) = { _ in (200, "{\"url\":\"https://artwork.zaydkrunz.com/covers/" + String(repeating: "a", count: 64) + ".jpg\",\"sha256\":\"" + String(repeating: "a", count: 64) + "\"}") }
     private static var requests: [URLRequest] = []
     private static var bodies: [Data] = []
     private static var responseDelay: TimeInterval = 0
     private let stopLock = NSLock()
     private var stopped = false
 
-    static func reset(delay: TimeInterval = 0, handler: @escaping (URLRequest) -> (Int, String) = { _ in (200, "https://files.catbox.moe/abc123.jpg\n") }) {
+    static func reset(delay: TimeInterval = 0, handler: @escaping (URLRequest) -> (Int, String) = { _ in (200, "{\"url\":\"https://artwork.zaydkrunz.com/covers/" + String(repeating: "a", count: 64) + ".jpg\",\"sha256\":\"" + String(repeating: "a", count: 64) + "\"}") }) {
         lock.lock(); defer { lock.unlock() }
         self.handler = handler; requests = []; bodies = []; responseDelay = delay
     }
@@ -36,10 +36,11 @@ private final class CatboxStub: URLProtocol {
             }
         }
         Self.lock.lock()
-        Self.requests.append(request); Self.bodies.append(body)
-        let handler = Self.handler; let delay = Self.responseDelay
+        if request.url?.lastPathComponent != "installations" { Self.requests.append(request); Self.bodies.append(body) }
+        let handler = Self.handler; let delay = request.url?.lastPathComponent == "installations" ? 0 : Self.responseDelay
         Self.lock.unlock()
-        let (status, text) = handler(request)
+        let (status, text) = request.url?.lastPathComponent == "installations"
+            ? (201, "{\"token\":\"" + String(repeating: "t", count: 43) + "\"}") : handler(request)
         let delivery = DispatchWorkItem { [self] in
             stopLock.lock(); defer { stopLock.unlock() }
             guard !stopped else { return }
@@ -55,10 +56,10 @@ private final class CatboxStub: URLProtocol {
 }
 
 @Suite(.serialized)
-struct CatboxArtworkTests {
+struct HostedArtworkTests {
     private func session() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [CatboxStub.self]
+        configuration.protocolClasses = [ArtworkUploadStub.self]
         return URLSession(configuration: configuration)
     }
     private func artwork(red: CGFloat = 0.3, size: Int = 64) throws -> Data {
@@ -78,12 +79,12 @@ struct CatboxArtworkTests {
     private func directory() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
     private func seed(_ directory: URL, image: Data, attempts: [Date] = []) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let hash = CatboxArtwork.contentHash(try #require(ArtworkService.uploadThumbnail(image)))
+        let hash = HostedArtwork.contentHash(try #require(ArtworkService.uploadThumbnail(image)))
         let cache: [String: Any] = [
-            "images": [hash: ["url": "https://files.catbox.moe/old123.jpg", "checkedAt": Date().addingTimeInterval(-31 * 86400).timeIntervalSinceReferenceDate]],
-            "attempts": attempts.map(\.timeIntervalSinceReferenceDate)
+            "images": [hash: ["url": "https://artwork.zaydkrunz.com/covers/" + String(repeating: "b", count: 64) + ".jpg", "checkedAt": Date().addingTimeInterval(-31 * 86400).timeIntervalSinceReferenceDate]],
+            "attempts": attempts.map(\.timeIntervalSinceReferenceDate), "retryAt": [:]
         ]
-        try JSONSerialization.data(withJSONObject: cache).write(to: directory.appendingPathComponent("catbox-v1.json"))
+        try JSONSerialization.data(withJSONObject: cache).write(to: directory.appendingPathComponent("hosted-artwork-v1.json"))
     }
 
     @Test func resizedUploadHasNoSourceMetadata() throws {
@@ -106,108 +107,108 @@ struct CatboxArtworkTests {
         // Only those generated technical fields may remain in EXIF.
         let exifKeys = Set(exif?.keys.map { $0 } ?? [])
         #expect(exifKeys.isSubset(of: [kCGImagePropertyExifColorSpace as String, kCGImagePropertyExifPixelXDimension as String, kCGImagePropertyExifPixelYDimension as String]))
-        #expect(CatboxArtwork.contentHash(jpeg) != CatboxArtwork.contentHash(try #require(ArtworkService.uploadThumbnail(artwork(red: 0.8)))))
+        #expect(HostedArtwork.contentHash(jpeg) != HostedArtwork.contentHash(try #require(ArtworkService.uploadThumbnail(artwork(red: 0.8)))))
     }
 
     @Test func identicalArtworkAcrossTracksAndRestartsUploadsOnlyOnce() async throws {
-        CatboxStub.reset(delay: 0.05)
+        ArtworkUploadStub.reset(delay: 0.05)
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let session = session(); defer { session.invalidateAndCancel() }
-        let uploader = CatboxArtwork(directory: directory, session: session)
+        let uploader = HostedArtwork(directory: directory, session: session)
         let image = try artwork()
         async let first = uploader.resolve(image)
         async let second = uploader.resolve(image)
         let (a, b) = try await (first, second)
         #expect(a == b)
-        let restored = CatboxArtwork(directory: directory, session: session)
+        let restored = HostedArtwork(directory: directory, session: session)
         #expect(try await restored.resolve(image) == a)
-        let (requests, bodies) = CatboxStub.recorded
+        let (requests, bodies) = ArtworkUploadStub.recorded
         #expect(requests.count == 1)
         #expect(requests.first?.httpMethod == "POST")
-        #expect(requests.first?.url?.absoluteString == "https://catbox.moe/user/api.php")
-        let hash = CatboxArtwork.contentHash(try #require(ArtworkService.uploadThumbnail(image)))
-        #expect(bodies.first?.range(of: Data("filename=\"\(hash).jpg\"".utf8)) != nil)
-        #expect(bodies.first?.range(of: Data("name=\"userhash\"".utf8)) == nil)
+        #expect(requests.first?.url?.absoluteString == "https://artwork.zaydkrunz.com/v1/artwork")
+        #expect(bodies.first == ArtworkService.uploadThumbnail(image))
+        #expect(requests.first?.value(forHTTPHeaderField: "Content-Type") == "image/jpeg")
+        #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer " + String(repeating: "t", count: 43))
     }
 
     @Test func uploadFailureBacksOffAndAttemptsSurviveRestart() async throws {
-        CatboxStub.reset { _ in (503, "unavailable") }
+        ArtworkUploadStub.reset { _ in (503, "unavailable") }
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let session = session(); defer { session.invalidateAndCancel() }
-        let uploader = CatboxArtwork(directory: directory, session: session)
+        let uploader = HostedArtwork(directory: directory, session: session)
         let image = try artwork()
         await #expect(throws: (any Error).self) { try await uploader.resolve(image) }
-        await #expect(throws: CatboxError.self) { try await uploader.resolve(image) }
-        let restored = CatboxArtwork(directory: directory, session: session)
-        await #expect(throws: CatboxError.self) { try await restored.resolve(image) }
-        #expect(CatboxStub.recorded.0.count == 1)
+        await #expect(throws: ArtworkUploadError.self) { try await uploader.resolve(image) }
+        let restored = HostedArtwork(directory: directory, session: session)
+        await #expect(throws: ArtworkUploadError.self) { try await restored.resolve(image) }
+        #expect(ArtworkUploadStub.recorded.0.count == 1)
     }
 
     @Test(arguments: ["https://example.com/a.jpg", "https://files.catbox.moe.evil.test/a.jpg", "https://files.catbox.moe/a.html", "http://files.catbox.moe/a.jpg", "<html>Error</html>"])
     func unexpectedResponseNeverBecomesArtwork(_ response: String) async throws {
-        CatboxStub.reset { _ in (200, response) }
+        ArtworkUploadStub.reset { _ in (200, response) }
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let session = session(); defer { session.invalidateAndCancel() }
-        let uploader = CatboxArtwork(directory: directory, session: session)
-        await #expect(throws: CatboxError.self) { try await uploader.resolve(artwork()) }
+        let uploader = HostedArtwork(directory: directory, session: session)
+        await #expect(throws: ArtworkUploadError.self) { try await uploader.resolve(artwork()) }
     }
 
     @Test func missingCachedImageIsReuploaded() async throws {
-        CatboxStub.reset { request in request.httpMethod == "HEAD" ? (404, "") : (200, "https://files.catbox.moe/new123.jpg") }
+        ArtworkUploadStub.reset { request in request.httpMethod == "HEAD" ? (404, "") : (200, "{\"url\":\"https://artwork.zaydkrunz.com/covers/" + String(repeating: "a", count: 64) + ".jpg\",\"sha256\":\"" + String(repeating: "a", count: 64) + "\"}") }
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let image = try artwork(); try seed(directory, image: image)
         let session = session(); defer { session.invalidateAndCancel() }
-        let url = try await CatboxArtwork(directory: directory, session: session).resolve(image)
-        #expect(url.lastPathComponent == "new123.jpg")
-        #expect(CatboxStub.recorded.0.map(\.httpMethod) == ["HEAD", "POST"])
+        let url = try await HostedArtwork(directory: directory, session: session).resolve(image)
+        #expect(url.lastPathComponent == String(repeating: "a", count: 64) + ".jpg")
+        #expect(ArtworkUploadStub.recorded.0.map(\.httpMethod) == ["HEAD", "POST"])
     }
 
     @Test func temporaryCDNFailureKeepsCachedURLWithoutUploading() async throws {
-        CatboxStub.reset { _ in (503, "") }
+        ArtworkUploadStub.reset { _ in (503, "") }
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let image = try artwork(); try seed(directory, image: image)
         let session = session(); defer { session.invalidateAndCancel() }
-        let url = try await CatboxArtwork(directory: directory, session: session).resolve(image)
-        #expect(url.lastPathComponent == "old123.jpg")
-        #expect(try await CatboxArtwork(directory: directory, session: session).resolve(image) == url)
-        #expect(CatboxStub.recorded.0.map(\.httpMethod) == ["HEAD"])
+        let url = try await HostedArtwork(directory: directory, session: session).resolve(image)
+        #expect(url.lastPathComponent == String(repeating: "b", count: 64) + ".jpg")
+        #expect(try await HostedArtwork(directory: directory, session: session).resolve(image) == url)
+        #expect(ArtworkUploadStub.recorded.0.map(\.httpMethod) == ["HEAD"])
     }
 
     @Test func hourlyBudgetRejectsNewUploadsAfterRestart() async throws {
-        CatboxStub.reset()
+        ArtworkUploadStub.reset()
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let image = try artwork()
         try seed(directory, image: image, attempts: Array(repeating: Date().addingTimeInterval(-10), count: 60))
         let session = session(); defer { session.invalidateAndCancel() }
-        let uploader = CatboxArtwork(directory: directory, session: session)
-        await #expect(throws: CatboxError.self) { try await uploader.resolve(artwork(red: 0.8)) }
-        #expect(CatboxStub.recorded.0.isEmpty)
+        let uploader = HostedArtwork(directory: directory, session: session)
+        await #expect(throws: ArtworkUploadError.self) { try await uploader.resolve(artwork(red: 0.8)) }
+        #expect(ArtworkUploadStub.recorded.0.isEmpty)
     }
 
     @Test func invalidImagesNeverUpload() async throws {
-        CatboxStub.reset()
+        ArtworkUploadStub.reset()
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let session = session(); defer { session.invalidateAndCancel() }
-        let uploader = CatboxArtwork(directory: directory, session: session)
-        await #expect(throws: CatboxError.self) { try await uploader.resolve(Data("not an image".utf8)) }
-        #expect(CatboxStub.recorded.0.isEmpty)
+        let uploader = HostedArtwork(directory: directory, session: session)
+        await #expect(throws: ArtworkUploadError.self) { try await uploader.resolve(Data("not an image".utf8)) }
+        #expect(ArtworkUploadStub.recorded.0.isEmpty)
     }
 
     @Test func cancelingEnrichmentCancelsTheUpload() async throws {
-        CatboxStub.reset(delay: 0.5)
+        ArtworkUploadStub.reset(delay: 0.5)
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let session = session(); defer { session.invalidateAndCancel() }
-        let uploader = CatboxArtwork(directory: directory, session: session)
+        let uploader = HostedArtwork(directory: directory, session: session)
         let image = try artwork()
         let task = Task { try await uploader.resolve(image) }
         for _ in 0..<100 {
-            if !CatboxStub.recorded.0.isEmpty { break }
+            if !ArtworkUploadStub.recorded.0.isEmpty { break }
             try await Task.sleep(for: .milliseconds(5))
         }
-        #expect(CatboxStub.recorded.0.count == 1)
+        #expect(ArtworkUploadStub.recorded.0.count == 1)
         task.cancel()
         await #expect(throws: (any Error).self) { try await task.value }
-        let cache = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("catbox-v1.json"))) as? [String: Any]
+        let cache = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("hosted-artwork-v1.json"))) as? [String: Any]
         #expect((cache?["images"] as? [String: Any])?.isEmpty == true)
     }
 }

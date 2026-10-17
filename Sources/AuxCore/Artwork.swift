@@ -2,6 +2,12 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
+public struct DiscordImageResult: Sendable {
+    public var available: Bool
+    public var failure: String?
+    public init(available: Bool, failure: String? = nil) { self.available = available; self.failure = failure }
+}
+
 public actor ArtworkService {
     private let session: URLSession
     public init(session: URLSession? = nil) {
@@ -53,7 +59,26 @@ public actor ArtworkService {
     }
 
     public func discordImageAvailable(_ reference: String?) async -> Bool {
-        guard let url = Self.discordProxyURL(reference) else { return false }
-        return (try? await download(url)) != nil
+        await checkDiscordImage(reference).available
+    }
+
+    public func checkDiscordImage(_ reference: String?) async -> DiscordImageResult {
+        guard let url = Self.discordProxyURL(reference) else {
+            return .init(available: false, failure: "Discord returned no usable image reference")
+        }
+        do {
+            let (file, response) = try await session.download(from: url)
+            defer { try? FileManager.default.removeItem(at: file) }
+            try Task.checkCancellation()
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else { return .init(available: false, failure: "Discord image proxy HTTP \(status)") }
+            guard (try file.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0 < 20_000_000,
+                  Self.thumbnail(try Data(contentsOf: file)) != nil else {
+                return .init(available: false, failure: "Discord proxy returned invalid image data")
+            }
+            return .init(available: true)
+        } catch {
+            return .init(available: false, failure: "Discord image check: " + error.localizedDescription)
+        }
     }
 }
