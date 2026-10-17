@@ -41,7 +41,7 @@ struct SettingsView: View {
                 Text(model.statusTitle).font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer()
                 Button(copied ? "Copied" : "Copy diagnostics") {
-                    let text = "Aux \(version)\nmacOS \(ProcessInfo.processInfo.operatingSystemVersionString)\nMusic: \(model.snapshot.state.rawValue)\nMusic access: \(model.musicAccessTitle)\nDiscord: \(model.publication.connection.rawValue)\nSharing enabled: \(settings.sharingEnabled)\nAccepted activity: \(model.publication.accepted != nil)\nArtwork: \(model.artworkDiagnostic)\nError: \(model.musicError ?? model.publication.message ?? "none")"
+                    let text = "Aux \(version)\nmacOS \(ProcessInfo.processInfo.operatingSystemVersionString)\nMusic: \(model.snapshot.state.rawValue)\nMusic access: \(model.musicAccessTitle)\nDiscord: \(model.publication.connection.rawValue)\nSharing enabled: \(settings.sharingEnabled)\nAccepted activity: \(model.publication.accepted != nil)\nArtwork: \(model.artworkDiagnostic)\nArtwork read error: \(model.artworkReadError ?? "none")\nError: \(model.musicError ?? model.publication.message ?? "none")"
                     NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
                     copied = true
                 }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(.secondary)

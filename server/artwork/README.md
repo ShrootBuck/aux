@@ -17,6 +17,7 @@ No R2, Catbox, Apple credentials, or shared client secret is required.
 - Health: `GET /health`, HTTP 200. Do not expose port 8080 directly to the Internet.
 - Tunnel published application: `artwork.zaydkrunz.com` -> `http://localhost:80`.
 - No Cloudflare Access login or browser challenge on this hostname. Only image GET/HEAD responses are publicly cacheable; API/health/error responses are `no-store`.
+- A Cloudflare Configuration Rule matching `(http.host eq "artwork.zaydkrunz.com")` sets Browser Integrity Check to **Off**, so non-browser image clients are not rejected with error 1010. Keep the exception scoped to this hostname; upload authentication and server quotas still apply.
 
 Only enable `TRUST_CLOUDFLARE=1` when requests reach the origin through the
 Cloudflare Tunnel; otherwise forged CF-Connecting-IP headers could bypass IP

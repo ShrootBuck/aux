@@ -15,6 +15,7 @@ final class AppModel: ObservableObject {
     @Published var musicError: String?
     @Published var permissionDenied = false
     @Published var artworkStatus = ""
+    @Published var artworkReadError: String?
     @Published var extras: TrackExtras?
     @Published var panelVisible = false
     @Published var sleeping = false
@@ -193,7 +194,7 @@ final class AppModel: ObservableObject {
         guard !stopped, !sleeping else { return }
         guard let track = snapshot.track else {
             enrichment?.cancel(); enrichment = nil
-            imageIdentity = ""; enrichmentKey = ""; artwork = nil; extras = nil; localArtwork = nil; artworkStatus = ""
+            imageIdentity = ""; enrichmentKey = ""; artwork = nil; extras = nil; localArtwork = nil; artworkStatus = ""; artworkReadError = nil
             fallbackArtworkURL = nil
             return
         }
@@ -205,13 +206,22 @@ final class AppModel: ObservableObject {
         enrichmentKey = key
         imageIdentity = track.identity
         imageRetryAt = .distantFuture
-        if newTrack { artwork = nil; localArtwork = nil; extras = nil; fallbackArtworkURL = nil }
+        if newTrack { artwork = nil; localArtwork = nil; extras = nil; fallbackArtworkURL = nil; artworkReadError = nil }
         let country = settings.country
         artworkStatus = "Finding artwork…"
         enrichment = Task { [weak self] in
             guard let self else { return }
             if self.localArtwork == nil {
-                let raw = try? await self.music.artwork(for: track)
+                let raw: Data?
+                do {
+                    raw = try await self.music.artwork(for: track)
+                    guard !Task.isCancelled, self.enrichmentKey == key else { return }
+                    self.artworkReadError = nil
+                } catch {
+                    raw = nil
+                    guard !Task.isCancelled, self.enrichmentKey == key else { return }
+                    self.artworkReadError = error.localizedDescription
+                }
                 guard !Task.isCancelled, self.enrichmentKey == key else { return }
                 if let raw, let thumbnail = ArtworkService.thumbnail(raw) {
                     self.localArtwork = thumbnail
@@ -236,7 +246,7 @@ final class AppModel: ObservableObject {
             case .none:
                 if resolved.uploadFailed { self.artworkStatus = "Local artwork upload unavailable · will retry" }
                 else if self.localArtwork != nil { self.artworkStatus = "No Apple cover · local artwork stays in Aux" }
-                else { self.artworkStatus = "No artwork available" }
+                else { self.artworkStatus = self.artworkReadError == nil ? "No artwork available" : "Music artwork could not be read · will retry" }
             }
             if let error = resolved.uploadError { self.artworkStatus += " · " + error }
             self.extras = resolved.extras
