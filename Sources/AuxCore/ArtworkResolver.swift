@@ -77,8 +77,6 @@ public struct ArtworkResolver: Sendable {
         if let localURL {
             extras.artworkURL = localURL
             source = .library
-            // A capacity purge can happen while this track is still playing.
-            retryAt = min(retryAt, Date().addingTimeInterval(60))
         } else if let url = extras.artworkURL {
             catalogImage = try? await download(url)
             try Task.checkCancellation()

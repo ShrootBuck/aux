@@ -57,7 +57,7 @@ struct ArtworkResolverTests {
         #expect(result.fallbackArtworkURL == catalogURL)
         #expect(result.extras.trackURL == catalogExtras.trackURL)
         #expect(result.extras.albumURL == catalogExtras.albumURL)
-        #expect(result.retryAt.timeIntervalSinceNow > 55 && result.retryAt.timeIntervalSinceNow <= 60)
+        #expect(result.retryAt == .distantFuture)
         #expect(await requests.uploads == 1)
         #expect(await requests.downloads == 0)
         let payload = PresencePayload.make(snapshot: .init(state: .playing, track: track), extras: result.extras, options: .init())
