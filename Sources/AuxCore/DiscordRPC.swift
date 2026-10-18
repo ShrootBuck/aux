@@ -205,20 +205,27 @@ public actor DiscordPublisher {
         (17...20).contains(value.count) && value.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
     }
 
-    public func reconcile(_ desired: PresencePayload?, applicationID id: String, revision: UInt64, paused: Bool = false, fallbackArtworkURL: URL? = nil) -> PublicationStatus {
+    public func reconcile(_ desired: PresencePayload?, applicationID id: String, revision: UInt64, paused: Bool = false, enabled: Bool = true, fallbackArtworkURL: URL? = nil) -> PublicationStatus {
         guard revision >= latestRevision else { return status }
         latestRevision = revision
         // Pausing ends the IPC session without sending SET_ACTIVITY(null).
         // Check before maintenance/reconnection so polls, artwork completions,
         // and manual retries cannot reopen the socket while playback is paused.
-        if paused {
-            disconnect(clear: false)
-            status.connection = .paused
+        if paused || !enabled {
+            disconnect()
+            if paused && enabled { status.connection = .paused }
             failures = 0
             return status
         }
+        // No new song is not a request to erase the last one. In particular,
+        // Music can briefly have no consistent track while switching songs.
+        guard let desired else {
+            status.pending = false
+            cancelImageVerification()
+            return status
+        }
         if applicationID != id {
-            disconnect(clear: true)
+            disconnect()
             applicationID = id
             nextConnection = .distantPast
             failures = 0
@@ -228,21 +235,21 @@ public actor DiscordPublisher {
         var effective = desired
         status.artworkMessage = nil
         status.failedArtworkURL = nil
-        if let image = desired?.assets?.large_image, imageChecks[image]?.available == false {
+        if let image = desired.assets?.large_image, imageChecks[image]?.available == false {
             status.failedArtworkURL = URL(string: image)
             if let fallback = fallbackArtworkURL, fallback.scheme == "https",
                fallback.absoluteString != image, imageChecks[fallback.absoluteString]?.available != false {
-                effective?.assets?.large_image = fallback.absoluteString
+                effective.assets?.large_image = fallback.absoluteString
                 status.artworkMessage = "Preferred artwork unavailable in Discord · using Apple catalog artwork"
             } else {
-                effective?.assets = nil
+                effective.assets = nil
                 status.artworkMessage = "Artwork unavailable in Discord · will retry"
                 if let failure = imageChecks[image]?.failure { status.artworkMessage = failure + " · will retry" }
             }
         }
-        let image = effective?.assets?.large_image
+        let image = effective.assets?.large_image
         if verifyingImage != image { cancelImageVerification() }
-        status.artwork = image == nil ? (desired?.assets?.large_image == nil ? .none : .unavailable) :
+        status.artwork = image == nil ? (desired.assets?.large_image == nil ? .none : .unavailable) :
             (imageChecks[image!]?.available == true ? .available : .checking)
         do {
             if let socket { try socket.maintain() }
@@ -267,9 +274,9 @@ public actor DiscordPublisher {
                 }
                 return status
             }
-            guard budget.delay(at: Date(), clearing: desired == nil) == 0 else { return status }
+            guard budget.delay(at: Date()) == 0 else { return status }
             let nonce = UUID().uuidString
-            let activity: Any = try effective.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) } ?? NSNull()
+            let activity = try JSONSerialization.jsonObject(with: JSONEncoder().encode(effective))
             let deadline = Date().addingTimeInterval(2)
             try socket!.sendJSON(opcode: 1, object: ["cmd": "SET_ACTIVITY", "args": ["pid": ProcessInfo.processInfo.processIdentifier, "activity": activity], "nonce": nonce], until: deadline)
             budget.record(at: Date())
@@ -290,7 +297,7 @@ public actor DiscordPublisher {
             status.accepted = nil
             acceptedImageReference = nil
             status.acceptedAt = nil
-            status.pending = desired != nil
+            status.pending = true
             status.message = error.localizedDescription
             failures += 1
             nextConnection = Date().addingTimeInterval(min(30, pow(2, Double(min(failures, 5)))))
@@ -343,18 +350,12 @@ public actor DiscordPublisher {
         imageChecks[url.absoluteString] = nil
         imageFailures[url.absoluteString] = nil
     }
-    public func disconnect(clear: Bool, revision: UInt64? = nil) {
+    public func disconnect(revision: UInt64? = nil) {
         if let revision {
             guard revision >= latestRevision else { return }
             latestRevision = revision
         }
         cancelImageVerification()
-        if clear, let socket, status.accepted != nil {
-            let nonce = UUID().uuidString
-            let deadline = Date().addingTimeInterval(0.5)
-            try? socket.sendJSON(opcode: 1, object: ["cmd": "SET_ACTIVITY", "args": ["pid": ProcessInfo.processInfo.processIdentifier, "activity": NSNull()], "nonce": nonce], until: deadline)
-            _ = try? socket.response(nonce: nonce, until: deadline)
-        }
         socket?.close(); socket = nil
         hasAcknowledgedState = false
         acceptedImageReference = nil

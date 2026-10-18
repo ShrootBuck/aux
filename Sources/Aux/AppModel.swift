@@ -152,14 +152,15 @@ final class AppModel: ObservableObject {
                 forceTimeline = false
                 musicError = nil; permissionDenied = false
                 musicConnected = observed.state != .notRunning
-                nextObservation = Date().addingTimeInterval(snapshot.state == .playing ? 1 : 4)
+                nextObservation = Date().addingTimeInterval(snapshot.state == .playing || snapshot.state == .stopped ? 1 : 4)
             } catch MusicError.trackChanged {
                 guard !stopped, !sleeping, ownLifecycle == lifecycle else { return }
                 musicConnected = true
                 musicError = nil; permissionDenied = false
-                // Clear potentially stale data until the next consistent observation.
-                snapshot = timeline.accept(.init(state: .stopped))
+                // Keep the accepted song until Music supplies a consistent
+                // replacement. A track-change race is not a stop command.
                 nextObservation = .distantPast
+                return
             } catch {
                 guard !stopped, !sleeping, ownLifecycle == lifecycle else { return }
                 musicConnected = false
@@ -180,7 +181,7 @@ final class AppModel: ObservableObject {
         let ownRevision = revision
         let desired = sleeping || musicError != nil ? nil : PresencePayload.make(snapshot: snapshot, extras: extras, options: settings.options)
         let paused = snapshot.state == .paused && settings.sharingEnabled && musicError == nil
-        let result = await publisher.reconcile(desired, applicationID: SettingsStore.applicationID, revision: ownRevision, paused: paused, fallbackArtworkURL: fallbackArtworkURL)
+        let result = await publisher.reconcile(desired, applicationID: SettingsStore.applicationID, revision: ownRevision, paused: paused, enabled: settings.sharingEnabled, fallbackArtworkURL: fallbackArtworkURL)
         guard !stopped, !sleeping, ownRevision == revision else { return }
         publication = result
         if settings.shareLocalArtwork, settings.sharingEnabled, snapshot.state == .playing,
@@ -330,7 +331,7 @@ final class AppModel: ObservableObject {
         sleeping = true
         enrichment?.cancel(); enrichment = nil; enrichmentKey = ""
         Task {
-            await publisher.disconnect(clear: true, revision: ownRevision)
+            await publisher.disconnect(revision: ownRevision)
             guard ownRevision == revision, sleeping else { return }
             publication = .init()
         }
@@ -357,7 +358,7 @@ final class AppModel: ObservableObject {
             DistributedNotificationCenter.default().removeObserver(observer)
         }
         observers.removeAll()
-        await publisher.disconnect(clear: true, revision: revision)
+        await publisher.disconnect(revision: revision)
     }
 
     func loadPreview(state: String = "playing") {

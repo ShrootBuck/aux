@@ -70,10 +70,10 @@ public struct PresencePayload: Codable, Equatable, Sendable {
 public struct PublicationBudget: Sendable {
     private var sent: [Date] = []
     public init() {}
-    public mutating func delay(at now: Date, clearing: Bool = false) -> TimeInterval {
+    public mutating func delay(at now: Date) -> TimeInterval {
         sent.removeAll { now.timeIntervalSince($0) >= 20 }
         let burst = sent.count >= 5 ? max(0, 20 - now.timeIntervalSince(sent[0])) : 0
-        let spacing = !clearing && !sent.isEmpty ? max(0, 2 - now.timeIntervalSince(sent.last!)) : 0
+        let spacing = !sent.isEmpty ? max(0, 2 - now.timeIntervalSince(sent.last!)) : 0
         return max(burst, spacing)
     }
     public mutating func record(at now: Date) { sent.append(now) }

@@ -137,7 +137,7 @@ struct DiscordPublisherTests {
             _ = await publisher.reconcile(activity, applicationID: applicationID, revision: revision, fallbackArtworkURL: catalogURL)
         }
         #expect(try peer.activities().count == 2)
-        await publisher.disconnect(clear: false)
+        await publisher.disconnect()
     }
 
     @Test func healthyLibraryImageIsKeptInsteadOfCatalogFallback() async throws {
@@ -150,7 +150,7 @@ struct DiscordPublisherTests {
         #expect(status.failedArtworkURL == nil)
         #expect(status.accepted == activity)
         #expect(try peer.activities().count == 1)
-        await publisher.disconnect(clear: false)
+        await publisher.disconnect()
     }
 
     @Test func bothBrokenImagesAreRemovedWithoutClearingSong() async throws {
@@ -163,7 +163,7 @@ struct DiscordPublisherTests {
         #expect(status.accepted?.assets == nil)
         #expect(status.artworkMessage == "Artwork unavailable in Discord · will retry")
         #expect(try peer.activities().count == 3)
-        await publisher.disconnect(clear: false)
+        await publisher.disconnect()
     }
 
     @Test func missingImageInAcknowledgementDoesNotCountAsSuccess() async throws {
@@ -176,7 +176,7 @@ struct DiscordPublisherTests {
         let status = try await settle(publisher, activity, fallback: nil, expectedImage: nil)
         #expect(status.artwork == .unavailable)
         #expect(status.accepted?.details == activity.details)
-        await publisher.disconnect(clear: false)
+        await publisher.disconnect()
     }
 
     @Test func slowImageVerificationDoesNotBlockPauseOrReviveOldActivity() async throws {
@@ -222,7 +222,7 @@ struct DiscordPublisherTests {
         let stale = await publisher.reconcile(activity, applicationID: applicationID, revision: 1)
         #expect(stale.connection == .paused)
         // Sleep/quit after a pause must not send a delayed clear either.
-        await publisher.disconnect(clear: true, revision: 8)
+        await publisher.disconnect(revision: 8)
         #expect(peer.recorded.connections == 1)
         #expect(peer.recorded.frames.map(\.opcode) == [0, 1])
     }
@@ -257,25 +257,86 @@ struct DiscordPublisherTests {
         let activities = try peer.activities()
         #expect(activities.count == 2)
         #expect(activities.allSatisfy { $0 is [String: Any] })
-        await publisher.disconnect(clear: false, revision: 5)
+        await publisher.disconnect(revision: 5)
         #expect(try await peer.waitForClosure(2))
     }
 
-    @Test func explicitlyTurningSharingOffCanStillClearAfterAPause() async throws {
+    @Test func turningSharingOffAfterPauseDoesNotReconnectOrSendCleanup() async throws {
         let peer = DiscordPeer()
         let publisher = DiscordPublisher(connect: { try peer.connect() })
         _ = await publisher.reconcile(try payload(), applicationID: applicationID, revision: 1)
         _ = await publisher.reconcile(nil, applicationID: applicationID, revision: 2, paused: true)
         #expect(try await peer.waitForClosure(1))
 
-        let disabled = await publisher.reconcile(nil, applicationID: applicationID, revision: 3)
-        #expect(disabled.connection == .connected)
+        let disabled = await publisher.reconcile(nil, applicationID: applicationID, revision: 3, enabled: false)
+        #expect(disabled.connection != .connected)
         #expect(!disabled.pending)
         #expect(disabled.accepted == nil)
         let activities = try peer.activities()
+        #expect(activities.count == 1)
+        #expect(activities.allSatisfy { $0 is [String: Any] })
+        await publisher.disconnect(revision: 4)
+        #expect(peer.recorded.connections == 1)
+    }
+
+    @Test func missingTrackBetweenSongsSendsOnlyTheTwoSongsOnTheSameConnection() async throws {
+        let peer = DiscordPeer()
+        let publisher = DiscordPublisher(connect: { try peer.connect() })
+        _ = await publisher.reconcile(nil, applicationID: applicationID, revision: 1)
+        #expect(peer.recorded.connections == 0)
+        let first = try payload()
+        _ = await publisher.reconcile(first, applicationID: applicationID, revision: 2)
+        for revision in UInt64(3)...6 {
+            let missing = await publisher.reconcile(nil, applicationID: applicationID, revision: revision)
+            #expect(missing.accepted == first)
+            #expect(missing.connection == .connected)
+            #expect(!missing.pending)
+        }
+        #expect(try peer.activities().count == 1)
+        #expect(peer.recorded.closures == 0)
+
+        var next = first
+        next.details = "Gasolina"
+        let deadline = Date().addingTimeInterval(4)
+        var status = await publisher.reconcile(next, applicationID: applicationID, revision: 7)
+        while status.pending && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+            status = await publisher.reconcile(next, applicationID: applicationID, revision: 7)
+        }
+        #expect(status.accepted == next)
+        let activities = try peer.activities()
         #expect(activities.count == 2)
-        #expect(activities.last is NSNull)
-        await publisher.disconnect(clear: true, revision: 4)
+        #expect(activities.compactMap { ($0 as? [String: Any])?["details"] as? String } == [first.details, "Gasolina"])
+        #expect(peer.recorded.connections == 1)
+        await publisher.disconnect(revision: 8)
+        #expect(try await peer.waitForClosure(1))
+        #expect(try peer.activities().count == 2)
+    }
+
+    @Test func disablingSharingWhilePlayingOnlyClosesTheConnection() async throws {
+        let peer = DiscordPeer()
+        let publisher = DiscordPublisher(connect: { try peer.connect() })
+        let activity = try payload()
+        _ = await publisher.reconcile(activity, applicationID: applicationID, revision: 1)
+        let disabled = await publisher.reconcile(nil, applicationID: applicationID, revision: 2, enabled: false)
+        #expect(disabled.accepted == nil)
+        #expect(try await peer.waitForClosure(1))
+        for revision in UInt64(3)...5 {
+            _ = await publisher.reconcile(activity, applicationID: applicationID, revision: revision, enabled: false)
+        }
+        #expect(peer.recorded.connections == 1)
+        #expect(try peer.activities().count == 1)
+    }
+
+    @Test func changingApplicationIDNeverSendsAnEmptyActivity() async throws {
+        let peer = DiscordPeer()
+        let publisher = DiscordPublisher(connect: { try peer.connect() })
+        let activity = try payload()
+        _ = await publisher.reconcile(activity, applicationID: applicationID, revision: 1)
+        _ = await publisher.reconcile(activity, applicationID: "1560471305843646566", revision: 2)
+        #expect(try await peer.waitForClosure(1))
+        await publisher.disconnect(revision: 3)
         #expect(try await peer.waitForClosure(2))
+        #expect(try peer.activities().allSatisfy { $0 is [String: Any] })
     }
 }

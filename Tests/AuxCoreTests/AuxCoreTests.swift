@@ -121,14 +121,13 @@ struct AuxCoreTests {
         let notApple = CatalogResult(trackName: "", artistName: track.artist, collectionName: track.album, artworkUrl100: URL(string: "https://example.com/cover.jpg"))
         #expect(CatalogMatcher.albumMatch(for: track, results: [otherArtist, otherEdition, notApple]) == nil)
     }
-    @Test func testClearingGetsPriorityButStillHonorsBurstBudget() {
+    @Test func testActivityUpdatesHonorSpacingAndBurstBudget() {
         var budget = PublicationBudget()
         budget.record(at: epoch)
         #expect(budget.delay(at: epoch.addingTimeInterval(0.2)) > 0)
-        #expect(budget.delay(at: epoch.addingTimeInterval(0.2), clearing: true) == 0)
         for i in 1...4 { budget.record(at: epoch.addingTimeInterval(Double(i))) }
-        #expect(budget.delay(at: epoch.addingTimeInterval(10), clearing: true) == 10)
-        #expect(budget.delay(at: epoch.addingTimeInterval(21), clearing: true) == 0)
+        #expect(budget.delay(at: epoch.addingTimeInterval(10)) == 10)
+        #expect(budget.delay(at: epoch.addingTimeInterval(21)) == 0)
     }
     @Test func testFrameBoundsAndByteOrder() throws {
         let frame = RPCFrame(opcode: 3, payload: Data("hello".utf8))

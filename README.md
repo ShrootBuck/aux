@@ -40,7 +40,7 @@ The panel shows album artwork, track information, elapsed time, and a sharing sw
 
 - The status headline can show the song, artist, or Apple Music. The status contains only the artist; the album remains on the artwork.
 - Pausing silently disconnects from Discord without sending a clear-activity command. Aux stays disconnected while paused and reconnects when playback resumes. Discord controls when the old card disappears; there is no promised 10-second expiry.
-- Disabling sharing clears the activity. Sleep, quitting, track changes, seeks, and Discord restarts have explicit lifecycle handling.
+- Aux only sends activity updates containing a song, never an empty/clear-activity command. Missing or inconsistent Music data during a track change leaves the last activity in place until a valid replacement is ready. Disabling sharing, sleep, and quitting close the connection without sending cleanup commands; Discord controls removal after disconnection.
 - Song links require a matching title, artist, album, and available duration. Cover artwork can fall back to an exact artist-and-album match from either song or album search results when Apple omits the recording or its title or duration differs from your library.
 - Public Apple artwork and listening links can be included in the Discord activity. A failed artwork lookup does not block song text.
 - Enable **Settings → Artwork → Share local artwork** to prefer the actual cover in your Music library, including custom covers and imported tracks. Aux sends a small JPEG to its own artwork service at `artwork.zaydkrunz.com`. Apple's catalog remains a fallback and supplies listening links. This remains opt-in for new installations.
