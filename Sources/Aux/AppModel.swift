@@ -23,6 +23,10 @@ final class AppModel: ObservableObject {
     private let music = MusicBridge()
     private let publisher = DiscordPublisher()
     private let artworkResolver: ArtworkResolver
+    private let uploads: HostedArtwork
+    private var resolvedArtwork = ResolvedArtworkCache()
+    private var artworkRecovery: Task<Void, Never>?
+    private var repairingArtworkURL: URL?
     private var timeline = PlaybackTimeline()
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
@@ -45,7 +49,8 @@ final class AppModel: ObservableObject {
         isPreview = preview
         settings = SettingsStore(preview: preview)
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Aux", isDirectory: true)
-        artworkResolver = ArtworkResolver(catalog: CatalogResolver(directory: directory), uploads: HostedArtwork(directory: directory), images: ArtworkService())
+        uploads = HostedArtwork(directory: directory)
+        artworkResolver = ArtworkResolver(catalog: CatalogResolver(directory: directory), uploads: uploads, images: ArtworkService())
         settings.onChange = { [weak self] in self?.settingsChanged() }
         settingsSubscription = settings.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         if preview { loadPreview() }
@@ -178,6 +183,21 @@ final class AppModel: ObservableObject {
         let result = await publisher.reconcile(desired, applicationID: SettingsStore.applicationID, revision: ownRevision, paused: paused, fallbackArtworkURL: fallbackArtworkURL)
         guard !stopped, !sleeping, ownRevision == revision else { return }
         publication = result
+        if settings.shareLocalArtwork, settings.sharingEnabled, snapshot.state == .playing,
+           let failedURL = result.failedArtworkURL, failedURL.host == HostedArtwork.baseURL.host,
+           artworkRecovery == nil {
+            artworkRecovery = Task { [weak self] in
+                guard let self else { return }
+                let missing = await self.uploads.invalidateIfMissing(failedURL)
+                self.artworkRecovery = nil
+                guard !Task.isCancelled, missing else { return }
+                self.resolvedArtwork.remove(artworkURL: failedURL)
+                guard self.extras?.artworkURL == failedURL else { return }
+                self.repairingArtworkURL = failedURL
+                self.imageRetryAt = .distantPast
+                self.refreshArtworkIfNeeded()
+            }
+        }
     }
 
     private func settingsChanged() {
@@ -207,6 +227,19 @@ final class AppModel: ObservableObject {
         imageIdentity = track.identity
         imageRetryAt = .distantFuture
         if newTrack { artwork = nil; localArtwork = nil; extras = nil; fallbackArtworkURL = nil; artworkReadError = nil }
+        if let cached = resolvedArtwork.entry(for: key) {
+            let resolved = cached.resolution
+            extras = resolved.extras
+            fallbackArtworkURL = resolved.fallbackArtworkURL
+            localArtwork = cached.localArtwork
+            imageRetryAt = resolved.retryAt
+            if let image = resolved.image { setArtwork(image) }
+            artworkStatus = resolved.source == .library ? "Library artwork hosted by Aux" : "Apple catalog artwork"
+            if cached.complete {
+                enrichment = nil
+                return
+            }
+        }
         let country = settings.country
         artworkStatus = "Finding artwork…"
         enrichment = Task { [weak self] in
@@ -251,6 +284,7 @@ final class AppModel: ObservableObject {
             if let error = resolved.uploadError { self.artworkStatus += " · " + error }
             self.extras = resolved.extras
             self.fallbackArtworkURL = resolved.fallbackArtworkURL
+            self.resolvedArtwork.store(resolved, localArtwork: self.localArtwork, for: key)
             self.enrichment = nil
             await self.publish()
         }
@@ -263,6 +297,15 @@ final class AppModel: ObservableObject {
         updated.artworkURL = url
         extras = updated
         artworkStatus = "Library artwork hosted by Aux"
+        // Cache the early library result even if a track switch cancels the
+        // slower catalog lookup before it completes.
+        resolvedArtwork.store(.init(extras: updated, image: localArtwork, source: .library,
+                                    retryAt: .distantFuture, uploadFailed: false,
+                                    fallbackArtworkURL: fallbackArtworkURL), localArtwork: localArtwork, for: key, complete: false)
+        if repairingArtworkURL == url {
+            repairingArtworkURL = nil
+            await publisher.retryArtwork(url)
+        }
         await publish()
     }
 
@@ -308,6 +351,7 @@ final class AppModel: ObservableObject {
         revision &+= 1
         timer?.invalidate(); timer = nil
         enrichment?.cancel(); enrichment = nil
+        artworkRecovery?.cancel(); artworkRecovery = nil
         for observer in observers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             DistributedNotificationCenter.default().removeObserver(observer)

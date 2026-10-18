@@ -9,6 +9,54 @@ public struct ArtworkResolution: Sendable {
     public var uploadFailed: Bool
     public var fallbackArtworkURL: URL? = nil
     public var uploadError: String? = nil
+
+    public init(extras: TrackExtras, image: Data?, source: Source, retryAt: Date, uploadFailed: Bool,
+                fallbackArtworkURL: URL? = nil, uploadError: String? = nil) {
+        self.extras = extras; self.image = image; self.source = source
+        self.retryAt = retryAt; self.uploadFailed = uploadFailed
+        self.fallbackArtworkURL = fallbackArtworkURL; self.uploadError = uploadError
+    }
+}
+
+/// Keeps repeat tracks ready before the first Discord publication. The caller's
+/// key includes track identity and sharing/catalog settings to prevent leaks.
+public struct ResolvedArtworkCache {
+    public struct Entry {
+        public var resolution: ArtworkResolution
+        public var localArtwork: Data?
+        public var complete: Bool
+    }
+    private var entries: [String: Entry] = [:]
+    private var recency: [String] = []
+    private let capacity: Int
+
+    public init(capacity: Int = 64) { self.capacity = max(1, capacity) }
+
+    public mutating func entry(for key: String, at now: Date = Date()) -> Entry? {
+        guard var entry = entries[key] else { return nil }
+        // Retrying a failed upload or catalog lookup should not blank an
+        // already usable cover while enrichment runs in the background.
+        if entry.resolution.retryAt <= now { entry.complete = false }
+        touch(key)
+        return entry
+    }
+
+    public mutating func store(_ resolution: ArtworkResolution, localArtwork: Data?, for key: String, complete: Bool = true) {
+        guard resolution.extras.artworkURL != nil, resolution.source != .none else { return }
+        entries[key] = Entry(resolution: resolution, localArtwork: localArtwork, complete: complete)
+        touch(key)
+        while recency.count > capacity { entries[recency.removeFirst()] = nil }
+    }
+
+    public mutating func remove(artworkURL: URL) {
+        entries = entries.filter { $0.value.resolution.extras.artworkURL != artworkURL }
+        recency.removeAll { entries[$0] == nil }
+    }
+
+    private mutating func touch(_ key: String) {
+        recency.removeAll { $0 == key }
+        recency.append(key)
+    }
 }
 
 /// Prefer the library's actual cover; catalog matching still supplies song links.

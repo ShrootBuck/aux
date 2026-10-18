@@ -165,6 +165,7 @@ public struct PublicationStatus: Equatable, Sendable {
     public var userName: String?
     public var artwork: Artwork = .none
     public var artworkMessage: String?
+    public var failedArtworkURL: URL?
     public init() {}
 }
 
@@ -226,7 +227,9 @@ public actor DiscordPublisher {
         imageChecks = imageChecks.filter { $0.value.expires > Date() }
         var effective = desired
         status.artworkMessage = nil
+        status.failedArtworkURL = nil
         if let image = desired?.assets?.large_image, imageChecks[image]?.available == false {
+            status.failedArtworkURL = URL(string: image)
             if let fallback = fallbackArtworkURL, fallback.scheme == "https",
                fallback.absoluteString != image, imageChecks[fallback.absoluteString]?.available != false {
                 effective?.assets?.large_image = fallback.absoluteString
@@ -336,6 +339,10 @@ public actor DiscordPublisher {
         verifyingImage = nil
     }
     public func retry() { nextConnection = .distantPast }
+    public func retryArtwork(_ url: URL) {
+        imageChecks[url.absoluteString] = nil
+        imageFailures[url.absoluteString] = nil
+    }
     public func disconnect(clear: Bool, revision: UInt64? = nil) {
         if let revision {
             guard revision >= latestRevision else { return }

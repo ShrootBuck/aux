@@ -29,6 +29,7 @@ public actor HostedArtwork {
     private let session: URLSession
     private var cache = Cache()
     private var pending: [String: Task<URL, Error>] = [:]
+    private var recoveryChecks: [URL: Date] = [:]
     private let credentialURL: URL
     private var token: String?
 
@@ -82,6 +83,9 @@ public actor HostedArtwork {
         try Task.checkCancellation()
         guard let jpeg = ArtworkService.uploadThumbnail(artwork) else { throw ArtworkUploadError.invalidImage }
         let hash = Self.contentHash(jpeg)
+        // Accepted uploads are immediately reusable. A network check must never
+        // hold up the normal path back to an already-played song.
+        if let entry = cache.images[hash] { return entry.url }
         if let task = pending[hash] { return try await Self.wait(for: task) }
         let task = Task { try await self.resolvePrepared(jpeg, hash: hash) }
         pending[hash] = task
@@ -99,34 +103,6 @@ public actor HostedArtwork {
 
     private func resolvePrepared(_ jpeg: Data, hash: String) async throws -> URL {
         try Task.checkCancellation()
-        if var entry = cache.images[hash] {
-            // Image URLs are cached for a year at the CDN. Ask the origin's
-            // uncached status endpoint on every reuse, including fresh entries.
-            let key = entry.url.deletingPathExtension().lastPathComponent
-            var request = URLRequest(url: Self.baseURL.appendingPathComponent("v1/artwork/\(key)/status"),
-                                     cachePolicy: .reloadIgnoringLocalCacheData)
-            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-            let exists: Bool?
-            do {
-                let (data, response) = try await session.data(for: request)
-                exists = (response as? HTTPURLResponse)?.statusCode == 200 && data.count <= 2048
-                    ? (try? JSONDecoder().decode(Availability.self, from: data))?.exists : nil
-            } catch {
-                try Task.checkCancellation()
-                exists = nil
-            }
-            try Task.checkCancellation()
-            if exists != false {
-                // Only an explicit missing image triggers an upload. Network or
-                // server failures keep the URL and are checked again next time.
-                if exists == true { entry.checkedAt = Date() }
-                cache.images[hash] = entry
-                save()
-                return entry.url
-            }
-            cache.images[hash] = nil
-            save()
-        }
         let now = Date()
         if let next = cache.retryAt[hash], next > now { throw ArtworkUploadError.retryAfter(next) }
         cache.attempts.removeAll { now.timeIntervalSince($0) >= 86400 }
@@ -173,6 +149,30 @@ public actor HostedArtwork {
         cache.retryAt[hash] = nil
         save()
         return url
+    }
+
+    /// Called only after Discord reports a broken image, never on cache reuse.
+    /// A confirmed deletion allows the next resolution to restore the cover.
+    public func invalidateIfMissing(_ url: URL) async -> Bool {
+        guard !Task.isCancelled, Self.validURL(url),
+              cache.images.values.contains(where: { $0.url == url }) else { return false }
+        let now = Date()
+        recoveryChecks = recoveryChecks.filter { $0.value > now }
+        guard recoveryChecks[url] == nil else { return false }
+        recoveryChecks[url] = now.addingTimeInterval(60)
+        let key = url.deletingPathExtension().lastPathComponent
+        var request = URLRequest(url: Self.baseURL.appendingPathComponent("v1/artwork/\(key)/status"),
+                                 cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard !Task.isCancelled, (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 2048,
+                  let availability = try? JSONDecoder().decode(Availability.self, from: data),
+                  !availability.exists else { return false }
+            cache.images = cache.images.filter { $0.value.url != url }
+            save()
+            return true
+        } catch { return false }
     }
 
     private nonisolated static func validURL(_ url: URL) -> Bool {

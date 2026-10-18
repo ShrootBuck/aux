@@ -62,11 +62,14 @@ Purged image URLs return 404 at the origin until the same image is uploaded
 again; Cloudflare and Discord may continue serving cached copies. The uncached
 `GET /v1/artwork/<sha256>/status` endpoint returns `{"exists":true}` or
 `{"exists":false}` with `Cache-Control: no-store` and `CDN-Cache-Control: no-store`.
-Updated Aux clients check this endpoint whenever a cached URL is reused, such as
-on a song change, then reupload missing artwork. Successfully resolved artwork
-does not schedule periodic availability checks. Unknown status or network failures
-retain the URL and retry on the next reuse.
-Older app versions keep their previous 30-day cache behavior until updated.
+Aux trusts cached upload URLs and publishes them without an availability check.
+It uses this endpoint only after Discord reports a broken hosted image, then
+invalidates the cached URL and reuploads if the origin confirms it is missing.
+Unknown status or network failures retain the URL. Repeated failure-triggered
+checks for the same URL are throttled for 60 seconds; no timer polls the server.
+Recently resolved tracks also restore their complete artwork and links before
+the first Discord update when revisited. Older app versions retain their previous
+cache-check behavior until updated.
 
 ## Operations and recovery
 
