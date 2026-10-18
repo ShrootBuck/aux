@@ -119,10 +119,12 @@ struct PanelView: View {
     }
 
     private func progress(_ track: Track) -> some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        // Keep ticks on playback's second boundaries across model refreshes.
+        // A tiny offset avoids truncating 42.999999 to 42 at a floating-point boundary.
+        TimelineView(.periodic(from: model.snapshot.playbackStartedAt.addingTimeInterval(0.001), by: 1)) { _ in
             HStack(spacing: 7) {
                 if model.snapshot.state == .paused { Text("Paused"); Text("·") }
-                Text(formatTime(model.snapshot.position(at: context.date)))
+                Text(formatTime(model.snapshot.position(at: Date())))
                 if track.duration > 0 { Text("/"); Text(formatTime(track.duration)) }
             }
             .font(.system(size: 11, weight: .medium, design: .monospaced))

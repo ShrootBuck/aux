@@ -30,6 +30,10 @@ public struct PlaybackSnapshot: Equatable, Sendable {
         self.position = position.isFinite ? max(0, position) : 0
         self.sampledAt = sampledAt
     }
+    /// Shared clock anchor for the panel's second boundaries and Discord.
+    public var playbackStartedAt: Date {
+        sampledAt.addingTimeInterval(-position(at: sampledAt))
+    }
     public func position(at date: Date) -> TimeInterval {
         let elapsed = state == .playing ? max(0, date.timeIntervalSince(sampledAt)) : 0
         let value = max(0, position + elapsed)

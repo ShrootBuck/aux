@@ -48,12 +48,44 @@ struct AuxCoreTests {
         #expect(PresencePayload.make(snapshot: playing, extras: nil, options: .init(enabled: false)) == nil)
         #expect(PresencePayload.make(snapshot: .init(state: .stopped, track: track), extras: nil, options: .init()) == nil)
     }
-    @Test func testProgressAndTimestampsAreBoundedAndUseSeconds() {
+    @Test func testProgressAndTimestampsAreBoundedAndUseMilliseconds() {
         let snapshot = PlaybackSnapshot(state: .playing, track: track, position: 50, sampledAt: epoch)
         let payload = PresencePayload.make(snapshot: snapshot, extras: nil, options: .init())!
-        #expect(payload.timestamps?.start == 1_699_999_950)
-        #expect(payload.timestamps?.end == 1_700_000_201)
+        #expect(payload.timestamps?.start == 1_699_999_950_000)
+        #expect(payload.timestamps?.end == 1_700_000_201_000)
         #expect(snapshot.position(at: epoch.addingTimeInterval(500)) == 251)
+    }
+    @Test func testFractionalPlaybackClockSurvivesDiscordJSONEncoding() throws {
+        let fractionalTrack = Track(id: "fractional", title: "Song", artist: "Artist", album: "Album", duration: 251.375)
+        let snapshot = PlaybackSnapshot(state: .playing, track: fractionalTrack, position: 48.125,
+                                        sampledAt: epoch.addingTimeInterval(0.987))
+        let payload = try #require(PresencePayload.make(snapshot: snapshot, extras: nil, options: .init()))
+        let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? [String: Any])
+        let timestamps = try #require(json["timestamps"] as? [String: NSNumber])
+        let start = try #require(timestamps["start"]).doubleValue / 1000
+        let end = try #require(timestamps["end"]).doubleValue / 1000
+        #expect(abs(start - snapshot.playbackStartedAt.timeIntervalSince1970) < 0.001)
+        #expect(abs(end - start - fractionalTrack.duration) < 0.001)
+        for elapsed in stride(from: 0.0, through: 20, by: 0.1) {
+            let date = snapshot.sampledAt.addingTimeInterval(elapsed)
+            #expect(abs(date.timeIntervalSince1970 - start - snapshot.position(at: date)) < 0.001)
+        }
+    }
+    @Test func testOrdinaryPollsKeepOneClockThroughIrregularRefreshes() {
+        var timeline = PlaybackTimeline()
+        let first = timeline.accept(.init(state: .playing, track: track, position: 40.375, sampledAt: epoch))
+        let payload = PresencePayload.make(snapshot: first, extras: nil, options: .init())
+        for (elapsed, noise) in [(1.5, -0.08), (3.01, 0.12), (4.52, -0.15), (7.2, 0.04)] {
+            let accepted = timeline.accept(.init(state: .playing, track: track, position: 40.375 + elapsed + noise,
+                                                  sampledAt: epoch.addingTimeInterval(elapsed)))
+            #expect(accepted.playbackStartedAt == first.playbackStartedAt)
+            #expect(PresencePayload.make(snapshot: accepted, extras: nil, options: .init()) == payload)
+            for second in 41...50 {
+                let boundary = accepted.playbackStartedAt.addingTimeInterval(Double(second))
+                #expect(Int(accepted.position(at: boundary.addingTimeInterval(-0.001))) == second - 1)
+                #expect(Int(accepted.position(at: boundary.addingTimeInterval(0.001))) == second)
+            }
+        }
     }
     @Test func testOneWrongSearchResultIsRejected() {
         let wrong = CatalogResult(trackName: track.title, artistName: "Cover Band", collectionName: track.album, trackTimeMillis: 251000)

@@ -21,9 +21,18 @@ public actor MusicBridge {
     private var cachedTrack: Track?
     private var metadataReadAt = Date.distantPast
     private let readEvent: ((String, NSAppleEventDescriptor?) throws -> NSAppleEventDescriptor)?
-    public init() { readEvent = nil }
-    init(readEvent: @escaping (String, NSAppleEventDescriptor?) throws -> NSAppleEventDescriptor) {
+    private let now: () -> Date
+    private let isRunning: () -> Bool
+    public init() {
+        readEvent = nil
+        now = Date.init
+        isRunning = { !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music").isEmpty }
+    }
+    init(readEvent: @escaping (String, NSAppleEventDescriptor?) throws -> NSAppleEventDescriptor,
+         now: @escaping () -> Date = Date.init, isRunning: @escaping () -> Bool = { true }) {
         self.readEvent = readEvent
+        self.now = now
+        self.isRunning = isRunning
     }
 
     private func target() throws -> NSAppleEventDescriptor {
@@ -59,7 +68,7 @@ public actor MusicBridge {
     }
 
     public func snapshot() throws -> PlaybackSnapshot {
-        guard !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music").isEmpty else {
+        guard isRunning() else {
             cachedTrack = nil
             return .init(state: .notRunning)
         }
@@ -73,19 +82,23 @@ public actor MusicBridge {
         guard state != .stopped else { cachedTrack = nil; return .init(state: .stopped) }
         let trackRef = try get("pTrk")
         let id = (try? get("pPIS", of: trackRef).stringValue) ?? ""
-        if cachedTrack?.id != id || cachedTrack == nil || Date().timeIntervalSince(metadataReadAt) > 15 || id.isEmpty {
+        if cachedTrack?.id != id || cachedTrack == nil || now().timeIntervalSince(metadataReadAt) > 15 || id.isEmpty {
             let name = try get("pnam", of: trackRef).stringValue ?? ""
             let artist = try get("pArt", of: trackRef).stringValue ?? ""
             let album = try get("pAlb", of: trackRef).stringValue ?? ""
             let duration = (try? get("pDur", of: trackRef).doubleValue) ?? 0
             cachedTrack = Track(id: id, title: name, artist: artist, album: album, duration: duration)
-            metadataReadAt = Date()
+            metadataReadAt = now()
         }
+        let positionReadStarted = now()
         let position = try get("pPos").doubleValue
+        // Timestamp the position read itself, not the later track validation.
+        // The request midpoint bounds uncertainty to half the Apple event latency.
+        let sampledAt = positionReadStarted.addingTimeInterval(now().timeIntervalSince(positionReadStarted) / 2)
         // Don't publish metadata from one track with the next track's position.
         let currentID = (try? get("pPIS", of: property("pTrk")).stringValue) ?? ""
         guard currentID == id else { cachedTrack = nil; throw MusicError.trackChanged }
-        return .init(state: state, track: cachedTrack, position: position)
+        return .init(state: state, track: cachedTrack, position: position, sampledAt: sampledAt)
     }
 
     public func artwork(for track: Track) throws -> Data? {

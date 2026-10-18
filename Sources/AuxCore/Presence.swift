@@ -11,6 +11,7 @@ public struct TrackExtras: Codable, Equatable, Sendable {
 }
 
 public struct PresencePayload: Codable, Equatable, Sendable {
+    /// Unix milliseconds, preserving the playback clock's fractional second.
     public struct Timestamps: Codable, Equatable, Sendable { public var start: Int64; public var end: Int64 }
     public struct Assets: Codable, Equatable, Sendable { public var large_image: String?; public var large_text: String?; public var large_url: String? }
     public struct Button: Codable, Equatable, Sendable { public var label: String; public var url: String }
@@ -30,8 +31,8 @@ public struct PresencePayload: Codable, Equatable, Sendable {
               !track.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         var payload = Self(status_display_type: options.headline.displayType, details: safeText(track.title), state: track.artist.isEmpty ? nil : safeText(track.artist))
         if track.duration > 0 {
-            let start = snapshot.sampledAt.timeIntervalSince1970 - min(snapshot.position, track.duration)
-            payload.timestamps = .init(start: Int64(start.rounded(.down)), end: Int64((start + track.duration).rounded(.down)))
+            let start = snapshot.playbackStartedAt.timeIntervalSince1970
+            payload.timestamps = .init(start: Int64((start * 1000).rounded()), end: Int64(((start + track.duration) * 1000).rounded()))
         }
         if let extras {
             payload.details_url = appleURL(extras.trackURL)
