@@ -28,7 +28,7 @@ def create_app(config=None):
         DATA_DIR=os.environ.get("DATA_DIR", "/data"),
         PUBLIC_URL=os.environ.get("PUBLIC_URL", "https://artwork.zaydkrunz.com").rstrip("/"),
         TRUST_CLOUDFLARE=os.environ.get("TRUST_CLOUDFLARE", "0") == "1",
-        MAX_STORAGE_BYTES=int(os.environ.get("MAX_STORAGE_BYTES", 5 * 1024**3)),
+        MAX_STORAGE_BYTES=int(os.environ.get("MAX_STORAGE_BYTES", 10 * 1024**3)),
         MIN_FREE_BYTES=512 * 1024**2,
         MAX_INSTALLATIONS=20_000,
         RELEASE=os.environ.get("SOURCE_COMMIT", "development"),
@@ -55,17 +55,27 @@ def create_app(config=None):
     with database() as db:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS installations (digest TEXT PRIMARY KEY, created REAL NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS objects (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS objects (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS events (scope TEXT NOT NULL, at REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS event_lookup ON events(scope, at);
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
+        if "created" not in {row[1] for row in db.execute("PRAGMA table_info(objects)")}:
+            db.execute("ALTER TABLE objects ADD COLUMN created REAL NOT NULL DEFAULT 0")
+        db.execute("CREATE INDEX IF NOT EXISTS object_age ON objects(created,hash)")
         db.execute("INSERT OR IGNORE INTO metadata VALUES ('ip_salt', ?)", (secrets.token_hex(32),))
         salt = db.execute("SELECT value FROM metadata WHERE key='ip_salt'").fetchone()[0]
-        # Recover files written immediately before a process crash / DB rollback.
+        # Reconcile publication/eviction interrupted by a crash or DB rollback.
+        for (key,) in db.execute("SELECT hash FROM objects").fetchall():
+            if not (images / f"{key}.jpg").is_file():
+                db.execute("DELETE FROM objects WHERE hash=?", (key,))
         for path in images.glob("*.jpg"):
             if re.fullmatch(r"[a-f0-9]{64}\.jpg", path.name):
-                db.execute("INSERT OR IGNORE INTO objects VALUES (?,?)", (path.stem, path.stat().st_size))
+                stat = path.stat()
+                db.execute("INSERT OR IGNORE INTO objects (hash,bytes,created) VALUES (?,?,?)",
+                           (path.stem, stat.st_size, stat.st_mtime))
+                # Existing installations use original file time for upload age.
+                db.execute("UPDATE objects SET created=? WHERE hash=? AND created=0", (stat.st_mtime, path.stem))
 
     def client_key():
         # Only enable behind the existing Cloudflare Tunnel. No public host port.
@@ -165,8 +175,8 @@ def create_app(config=None):
         with lock, database() as db:
             if not target.exists():
                 used = db.execute("SELECT COALESCE(SUM(bytes),0) FROM objects").fetchone()[0]
-                if used + len(data) > app.config["MAX_STORAGE_BYTES"] or shutil.disk_usage(root).free < app.config["MIN_FREE_BYTES"] + len(data):
-                    response = jsonify(error="Artwork storage is full; existing covers remain available")
+                if len(data) > app.config["MAX_STORAGE_BYTES"] or shutil.disk_usage(root).free < app.config["MIN_FREE_BYTES"] + len(data):
+                    response = jsonify(error="Not enough storage for this upload; existing covers remain available")
                     response.status_code = 507
                     abort(response)
                 # Atomic publication: readers can never receive a partial image.
@@ -176,21 +186,34 @@ def create_app(config=None):
                         stream.write(data)
                         stream.flush()
                         os.fsync(stream.fileno())
+                    # Stage the complete upload before deleting anything. Keep the
+                    # remaining images, evicting only the oldest prefix needed.
+                    if used + len(data) > app.config["MAX_STORAGE_BYTES"]:
+                        oldest = db.execute("SELECT hash,bytes FROM objects ORDER BY created,hash").fetchall()
+                        for old_key, size in oldest:
+                            if used + len(data) <= app.config["MAX_STORAGE_BYTES"]:
+                                break
+                            (images / f"{old_key}.jpg").unlink(missing_ok=True)
+                            db.execute("DELETE FROM objects WHERE hash=?", (old_key,))
+                            used -= size
                     os.replace(temporary, target)
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
                 created = True
-            db.execute("INSERT OR IGNORE INTO objects VALUES (?,?)", (key, len(data)))
+            db.execute("INSERT OR IGNORE INTO objects (hash,bytes,created) VALUES (?,?,?)", (key, len(data), time.time()))
         return jsonify(url=f"{app.config['PUBLIC_URL']}/covers/{key}.jpg", sha256=key), 201 if created else 200
 
     @app.route("/covers/<filename>", methods=["GET", "HEAD"])
     def cover(filename):
         if not re.fullmatch(r"[a-f0-9]{64}\.jpg", filename):
             abort(404)
-        if not (images / filename).is_file():
-            abort(404)
-        response = send_file(images / filename, mimetype="image/jpeg", conditional=True, etag=filename[:-4], max_age=31536000)
+        # Open the file before an upload can evict it; an in-flight reader keeps
+        # its file descriptor even after the directory entry is removed.
+        with lock:
+            if not (images / filename).is_file():
+                abort(404)
+            response = send_file(images / filename, mimetype="image/jpeg", conditional=True, etag=filename[:-4], max_age=31536000)
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 

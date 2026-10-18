@@ -2,10 +2,12 @@ import concurrent.futures
 from contextlib import closing
 import hashlib
 import io
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from PIL import Image
 from app import create_app
 
@@ -23,9 +25,9 @@ class ArtworkTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def image(self, size=(64, 64)):
+    def image(self, size=(64, 64), color='red'):
         data = io.BytesIO()
-        image = Image.new('RGB', size, 'red')
+        image = Image.new('RGB', size, color)
         exif = Image.Exif()
         exif[270] = 'private metadata'
         image.save(data, 'JPEG', exif=exif)
@@ -84,6 +86,90 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual(self.upload(data=self.image((32,32))).status_code, 507)
         self.assertEqual(self.client.get('/covers/'+response.json['sha256']+'.jpg', buffered=True).status_code, 200)
         self.assertEqual(self.upload().status_code, 200)
+
+    def test_oldest_eviction_preserves_newer_images_and_duplicate_age(self):
+        uploads = [self.upload(data=self.image(color=color)) for color in ['red', 'green', 'blue']]
+        keys = [response.json['sha256'] for response in uploads]
+        root = Path(self.temp.name)
+        with closing(sqlite3.connect(root/'artwork.sqlite')) as db:
+            for age, key in enumerate(keys, 1):
+                db.execute('UPDATE objects SET created=? WHERE hash=?', (age, key))
+            db.commit()
+        # Duplicate uploads must not refresh the oldest image's upload date.
+        self.assertEqual(self.upload().status_code, 200)
+        sizes = [(root/'covers'/f'{key}.jpg').stat().st_size for key in keys]
+        self.config['MAX_STORAGE_BYTES'] = sum(sizes)
+        restarted = create_app(self.config).test_client()
+        incoming = self.upload(restarted, self.image(color='yellow'))
+        self.assertEqual(incoming.status_code, 201)
+        self.assertEqual(restarted.get('/covers/'+keys[0]+'.jpg').status_code, 404)
+        for key in keys[1:] + [incoming.json['sha256']]:
+            self.assertEqual(restarted.get('/covers/'+key+'.jpg', buffered=True).status_code, 200)
+        with closing(sqlite3.connect(root/'artwork.sqlite')) as db:
+            self.assertLessEqual(db.execute('SELECT SUM(bytes) FROM objects').fetchone()[0], sum(sizes))
+        self.assertEqual(len(list((root/'covers').glob('*.jpg'))), 3)
+
+    def test_eviction_removes_multiple_oldest_and_allows_reupload(self):
+        first = self.upload()
+        self.upload(data=self.image(color='blue'))
+        self.upload(data=self.image(color='green'))
+        root = Path(self.temp.name)
+        self.app.config['MAX_STORAGE_BYTES'] = (root/'covers'/f"{first.json['sha256']}.jpg").stat().st_size
+        incoming = self.upload(data=self.image(color='yellow'))
+        self.assertEqual(incoming.status_code, 201)
+        self.assertEqual(len(list((root/'covers').glob('*.jpg'))), 1)
+        restored = self.upload()
+        self.assertEqual(restored.status_code, 201)
+        self.assertEqual(restored.json['url'], first.json['url'])
+
+    def test_disk_pressure_and_failed_staging_do_not_evict(self):
+        first = self.upload()
+        self.app.config['MAX_STORAGE_BYTES'] = 350
+        with patch('app.shutil.disk_usage') as disk:
+            disk.return_value.free = 0
+            self.assertEqual(self.upload(data=self.image(color='blue')).status_code, 507)
+        with patch('app.os.fsync', side_effect=OSError('write failed')):
+            with self.assertRaises(OSError):
+                self.upload(data=self.image(color='blue'))
+        self.assertEqual(self.client.get('/covers/'+first.json['sha256']+'.jpg', buffered=True).status_code, 200)
+        self.assertFalse(list(Path(self.temp.name).glob('covers/.upload-*')))
+
+    def test_exact_capacity_and_invalid_uploads_preserve_images(self):
+        first = self.upload()
+        path = Path(self.temp.name)/'covers'/f"{first.json['sha256']}.jpg"
+        self.app.config['MAX_STORAGE_BYTES'] = path.stat().st_size
+        self.assertEqual(self.upload().status_code, 200)
+        self.assertEqual(self.upload(data=b'not an image').status_code, 422)
+        self.assertTrue(path.is_file())
+
+    def test_concurrent_distinct_uploads_stay_within_capacity(self):
+        self.app.config['MAX_STORAGE_BYTES'] = 700
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda color: self.upload(self.app.test_client(), self.image(color=color)),
+                                    ['red', 'green', 'blue', 'yellow']))
+        self.assertTrue(all(result.status_code == 201 for result in results))
+        files = list(Path(self.temp.name).glob('covers/*.jpg'))
+        self.assertEqual(len(files), 2)
+        self.assertLessEqual(sum(path.stat().st_size for path in files), 700)
+        with closing(sqlite3.connect(Path(self.temp.name)/'artwork.sqlite')) as db:
+            self.assertEqual(set(db.execute('SELECT hash,bytes FROM objects').fetchall()),
+                             {(path.stem, path.stat().st_size) for path in files})
+
+    def test_migrates_upload_age_and_reconciles_interrupted_eviction(self):
+        first = self.upload()
+        key = first.json['sha256']
+        root = Path(self.temp.name)
+        path = root/'covers'/f'{key}.jpg'
+        os.utime(path, (1234, 1234))
+        with closing(sqlite3.connect(root/'artwork.sqlite')) as db:
+            db.execute('DROP TABLE objects')
+            db.execute('CREATE TABLE objects (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL)')
+            db.execute('INSERT INTO objects VALUES (?,?)', (key, path.stat().st_size))
+            db.execute('INSERT INTO objects VALUES (?,?)', ('0'*64, 999))
+            db.commit()
+        create_app(self.config)
+        with closing(sqlite3.connect(root/'artwork.sqlite')) as db:
+            self.assertEqual(db.execute('SELECT hash,created FROM objects').fetchall(), [(key, 1234)])
 
     def test_paths_and_health(self):
         for path in ['/covers/'+'0'*64+'.jpg', '/covers/../../artwork.sqlite', '/covers/a.svg', '/covers/']:

@@ -42,9 +42,21 @@ URLs are accepted. Limits include failed image submissions: 60 per token/hour,
 Limits survive restart. HTTP 429 includes Retry-After.
 
 `GET` and `HEAD /covers/<hash>.jpg` need no authentication and support ETag,
-conditional requests and immutable one-year cache headers. A full origin
-does not interrupt existing reads. Storage defaults to 5 GiB, with 512 MiB
-free-space headroom; override `MAX_STORAGE_BYTES` explicitly if needed.
+conditional requests and immutable one-year cache headers. Storage defaults to
+10 GiB (10,737,418,240 bytes); override `MAX_STORAGE_BYTES` explicitly if needed.
+When a new image would exceed that cap, the service deletes the oldest uploaded
+images only until the new image fits. Reads and duplicate uploads do not refresh
+an image's age. Existing images retain their original file modification time as
+their upload age when upgrading from the previous schema. Eviction happens on
+new uploads, not on a timer or merely when the cap is reached exactly.
+
+The service stages the new image before eviction and preserves in-flight reads.
+It rejects uploads with HTTP 507 without eviction if an image cannot fit by
+itself or the disk lacks the 512 MiB free-space headroom needed to stage it.
+Evicted URLs return 404 at the origin until the same image is uploaded again;
+Cloudflare and Discord may continue serving cached copies. Aux currently checks
+cached URLs after 30 days and reuploads on a definite 404/410, so missing artwork
+may not recover immediately in existing clients.
 
 ## Operations and recovery
 
@@ -60,9 +72,10 @@ Startup reconciles image files written immediately before a database rollback.
 
 For an abused credential, set `installations.revoked=1` for its digest using
 the server's SQLite database. Do not print tokens in terminal history or logs.
-Removing a cover is an operator action; purge Cloudflare's cached URL as well,
-and remember Discord may retain its own cached copy. Turning off sharing in
-Aux does not delete previously hosted covers.
+For immediate manual removal of a cover, purge Cloudflare's cached URL as well,
+and remember Discord may retain its own cached copy. Automatic capacity eviction
+removes origin files only. Turning off sharing in Aux does not delete previously
+hosted covers.
 
 ## Validation
 
