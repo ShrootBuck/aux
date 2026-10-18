@@ -44,19 +44,28 @@ Limits survive restart. HTTP 429 includes Retry-After.
 `GET` and `HEAD /covers/<hash>.jpg` need no authentication and support ETag,
 conditional requests and immutable one-year cache headers. Storage defaults to
 10 GiB (10,737,418,240 bytes); override `MAX_STORAGE_BYTES` explicitly if needed.
-When a new image would exceed that cap, the service deletes the oldest uploaded
-images only until the new image fits. Reads and duplicate uploads do not refresh
-an image's age. Existing images retain their original file modification time as
-their upload age when upgrading from the previous schema. Eviction happens on
+When a new image would exceed that cap, the service purges **all stored covers**,
+then saves the incoming image as the first cover in the fresh store. Installation
+credentials, rate-limit history, and service settings survive the purge. Reusing
+an existing image adds no bytes and does not trigger a purge. Purging happens on
 new uploads, not on a timer or merely when the cap is reached exactly.
 
-The service stages the new image before eviction and preserves in-flight reads.
-It rejects uploads with HTTP 507 without eviction if an image cannot fit by
+The service stages the new image before purging and preserves in-flight reads.
+It rejects uploads with HTTP 507 without purging if an image cannot fit by
 itself or the disk lacks the 512 MiB free-space headroom needed to stage it.
-Evicted URLs return 404 at the origin until the same image is uploaded again;
-Cloudflare and Discord may continue serving cached copies. Aux currently checks
-cached URLs after 30 days and reuploads on a definite 404/410, so missing artwork
-may not recover immediately in existing clients.
+The old directory is retired atomically, the incoming image is published, and
+the retired files are deleted outside the upload lock. Startup finishes cleanup
+if a crash or filesystem error interrupts disk reclamation. Failed publication
+restores the old store before returning an error.
+
+Purged image URLs return 404 at the origin until the same image is uploaded
+again; Cloudflare and Discord may continue serving cached copies. The uncached
+`GET /v1/artwork/<sha256>/status` endpoint returns `{"exists":true}` or
+`{"exists":false}` with `Cache-Control: no-store` and `CDN-Cache-Control: no-store`.
+Updated Aux clients check this endpoint whenever a cached URL is reused and
+about once a minute while sharing the same track, then reupload missing artwork.
+Unknown status or network failures retain the URL and retry on the next check.
+Older app versions keep their previous 30-day cache behavior until updated.
 
 ## Operations and recovery
 
@@ -73,7 +82,7 @@ Startup reconciles image files written immediately before a database rollback.
 For an abused credential, set `installations.revoked=1` for its digest using
 the server's SQLite database. Do not print tokens in terminal history or logs.
 For immediate manual removal of a cover, purge Cloudflare's cached URL as well,
-and remember Discord may retain its own cached copy. Automatic capacity eviction
+and remember Discord may retain its own cached copy. Automatic capacity purging
 removes origin files only. Turning off sharing in Aux does not delete previously
 hosted covers.
 

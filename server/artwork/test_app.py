@@ -87,29 +87,31 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual(self.client.get('/covers/'+response.json['sha256']+'.jpg', buffered=True).status_code, 200)
         self.assertEqual(self.upload().status_code, 200)
 
-    def test_oldest_eviction_preserves_newer_images_and_duplicate_age(self):
+    def test_capacity_purges_every_old_image_and_preserves_credentials(self):
         uploads = [self.upload(data=self.image(color=color)) for color in ['red', 'green', 'blue']]
         keys = [response.json['sha256'] for response in uploads]
         root = Path(self.temp.name)
-        with closing(sqlite3.connect(root/'artwork.sqlite')) as db:
-            for age, key in enumerate(keys, 1):
-                db.execute('UPDATE objects SET created=? WHERE hash=?', (age, key))
-            db.commit()
-        # Duplicate uploads must not refresh the oldest image's upload date.
+        # Reusing an image does not add bytes or trigger a purge.
         self.assertEqual(self.upload().status_code, 200)
         sizes = [(root/'covers'/f'{key}.jpg').stat().st_size for key in keys]
         self.config['MAX_STORAGE_BYTES'] = sum(sizes)
         restarted = create_app(self.config).test_client()
         incoming = self.upload(restarted, self.image(color='yellow'))
         self.assertEqual(incoming.status_code, 201)
-        self.assertEqual(restarted.get('/covers/'+keys[0]+'.jpg').status_code, 404)
-        for key in keys[1:] + [incoming.json['sha256']]:
-            self.assertEqual(restarted.get('/covers/'+key+'.jpg', buffered=True).status_code, 200)
+        for key in keys:
+            self.assertEqual(restarted.get('/covers/'+key+'.jpg').status_code, 404)
+            self.assertEqual(restarted.get('/v1/artwork/'+key+'/status').json, {'exists': False})
+        self.assertEqual(restarted.get('/covers/'+incoming.json['sha256']+'.jpg', buffered=True).status_code, 200)
         with closing(sqlite3.connect(root/'artwork.sqlite')) as db:
-            self.assertLessEqual(db.execute('SELECT SUM(bytes) FROM objects').fetchone()[0], sum(sizes))
-        self.assertEqual(len(list((root/'covers').glob('*.jpg'))), 3)
+            self.assertEqual(db.execute('SELECT hash FROM objects').fetchall(), [(incoming.json['sha256'],)])
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM installations').fetchone()[0], 1)
+            self.assertGreater(db.execute('SELECT COUNT(*) FROM events').fetchone()[0], 0)
+        self.assertEqual(len(list((root/'covers').glob('*.jpg'))), 1)
+        self.assertFalse(list(root.glob('.purged-*')))
+        # The saved installation credential still works after purging and restart.
+        self.assertEqual(self.upload(create_app(self.config).test_client()).status_code, 201)
 
-    def test_eviction_removes_multiple_oldest_and_allows_reupload(self):
+    def test_purged_image_can_be_reuploaded_at_the_same_url(self):
         first = self.upload()
         self.upload(data=self.image(color='blue'))
         self.upload(data=self.image(color='green'))
@@ -122,7 +124,7 @@ class ArtworkTests(unittest.TestCase):
         self.assertEqual(restored.status_code, 201)
         self.assertEqual(restored.json['url'], first.json['url'])
 
-    def test_disk_pressure_and_failed_staging_do_not_evict(self):
+    def test_disk_pressure_and_failed_staging_do_not_purge(self):
         first = self.upload()
         self.app.config['MAX_STORAGE_BYTES'] = 350
         with patch('app.shutil.disk_usage') as disk:
@@ -132,7 +134,38 @@ class ArtworkTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 self.upload(data=self.image(color='blue'))
         self.assertEqual(self.client.get('/covers/'+first.json['sha256']+'.jpg', buffered=True).status_code, 200)
-        self.assertFalse(list(Path(self.temp.name).glob('covers/.upload-*')))
+        self.assertFalse(list(Path(self.temp.name).glob('.upload-*')))
+
+    def test_failed_publication_restores_the_previous_store(self):
+        first = self.upload()
+        self.app.config['MAX_STORAGE_BYTES'] = 350
+        with patch('app.os.replace', side_effect=OSError('publication failed')):
+            with self.assertRaises(OSError):
+                self.upload(data=self.image(color='blue'))
+        self.assertEqual(self.client.get('/covers/'+first.json['sha256']+'.jpg', buffered=True).status_code, 200)
+        self.assertFalse(list(Path(self.temp.name).glob('.purged-*')))
+
+    def test_restart_finishes_interrupted_full_purge(self):
+        first = self.upload()
+        root = Path(self.temp.name)
+        (root/'covers').rename(root/'.purged-interrupted')
+        restarted = create_app(self.config).test_client()
+        self.assertEqual(restarted.get('/covers/'+first.json['sha256']+'.jpg').status_code, 404)
+        self.assertFalse(list(root.glob('.purged-*')))
+        with closing(sqlite3.connect(root/'artwork.sqlite')) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM objects').fetchone()[0], 0)
+        self.assertEqual(self.upload(restarted).status_code, 201)
+
+    def test_availability_is_not_cached_and_matches_origin(self):
+        response = self.upload()
+        key = response.json['sha256']
+        available = self.client.get('/v1/artwork/'+key+'/status')
+        self.assertEqual(available.json, {'exists': True})
+        self.assertEqual(available.headers['Cache-Control'], 'no-store')
+        self.assertEqual(available.headers['CDN-Cache-Control'], 'no-store')
+        (Path(self.temp.name)/'covers'/f'{key}.jpg').unlink()
+        self.assertEqual(self.client.get('/v1/artwork/'+key+'/status').json, {'exists': False})
+        self.assertEqual(self.client.get('/v1/artwork/not-a-hash/status').status_code, 404)
 
     def test_exact_capacity_and_invalid_uploads_preserve_images(self):
         first = self.upload()

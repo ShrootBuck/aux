@@ -48,6 +48,7 @@ public actor HostedArtwork {
 
     private struct Credential: Codable { let token: String }
     private struct UploadResponse: Decodable { let url: URL; let sha256: String }
+    private struct Availability: Decodable { let exists: Bool }
 
     private func credential() async throws -> String {
         if let token { return token }
@@ -99,23 +100,26 @@ public actor HostedArtwork {
     private func resolvePrepared(_ jpeg: Data, hash: String) async throws -> URL {
         try Task.checkCancellation()
         if var entry = cache.images[hash] {
-            if Date().timeIntervalSince(entry.checkedAt) < 30 * 86400 { return entry.url }
-            // Only a definite deletion triggers another upload. A temporary
-            // network failure must not create more copies of a stored cover.
-            var request = URLRequest(url: entry.url)
-            request.httpMethod = "HEAD"
-            let status: Int?
+            // Image URLs are cached for a year at the CDN. Ask the origin's
+            // uncached status endpoint on every reuse, including fresh entries.
+            let key = entry.url.deletingPathExtension().lastPathComponent
+            var request = URLRequest(url: Self.baseURL.appendingPathComponent("v1/artwork/\(key)/status"),
+                                     cachePolicy: .reloadIgnoringLocalCacheData)
+            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+            let exists: Bool?
             do {
-                let (_, response) = try await session.data(for: request)
-                status = (response as? HTTPURLResponse)?.statusCode
+                let (data, response) = try await session.data(for: request)
+                exists = (response as? HTTPURLResponse)?.statusCode == 200 && data.count <= 2048
+                    ? (try? JSONDecoder().decode(Availability.self, from: data))?.exists : nil
             } catch {
                 try Task.checkCancellation()
-                status = nil
+                exists = nil
             }
             try Task.checkCancellation()
-            if status != 404 && status != 410 {
-                // Retry transient failures in a day instead of on every song.
-                entry.checkedAt = Date().addingTimeInterval(status == 200 ? 0 : -29 * 86400)
+            if exists != false {
+                // Only an explicit missing image triggers an upload. Network or
+                // server failures keep the URL and are checked again next time.
+                if exists == true { entry.checkedAt = Date() }
                 cache.images[hash] = entry
                 save()
                 return entry.url

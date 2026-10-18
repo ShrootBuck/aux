@@ -41,6 +41,18 @@ def create_app(config=None):
     images.mkdir(exist_ok=True)
     lock = threading.Lock()
 
+    def reclaim_purged(directory):
+        try:
+            shutil.rmtree(directory)
+        except OSError:
+            # A crash or filesystem error must not make retired images public
+            # again. Startup retries reclaiming their disk space.
+            app.logger.exception("Could not reclaim purged artwork")
+
+    for directory in root.glob(".purged-*"):
+        if directory.is_dir():
+            reclaim_purged(directory)
+
     @contextmanager
     def database():
         db = sqlite3.connect(root / "artwork.sqlite", timeout=10)
@@ -172,6 +184,7 @@ def create_app(config=None):
         key = hashlib.sha256(data).hexdigest()
         target = images / f"{key}.jpg"
         created = False
+        retired = None
         with lock, database() as db:
             if not target.exists():
                 used = db.execute("SELECT COALESCE(SUM(bytes),0) FROM objects").fetchone()[0]
@@ -180,29 +193,49 @@ def create_app(config=None):
                     response.status_code = 507
                     abort(response)
                 # Atomic publication: readers can never receive a partial image.
-                fd, temporary = tempfile.mkstemp(prefix=".upload-", dir=images)
+                fd, temporary = tempfile.mkstemp(prefix=".upload-", dir=root)
                 try:
                     with os.fdopen(fd, "wb") as stream:
                         stream.write(data)
                         stream.flush()
                         os.fsync(stream.fileno())
-                    # Stage the complete upload before deleting anything. Keep the
-                    # remaining images, evicting only the oldest prefix needed.
+                    # Retire the whole store at once, so a crash cannot leave a
+                    # partially purged collection public. Stage outside covers/.
                     if used + len(data) > app.config["MAX_STORAGE_BYTES"]:
-                        oldest = db.execute("SELECT hash,bytes FROM objects ORDER BY created,hash").fetchall()
-                        for old_key, size in oldest:
-                            if used + len(data) <= app.config["MAX_STORAGE_BYTES"]:
-                                break
-                            (images / f"{old_key}.jpg").unlink(missing_ok=True)
-                            db.execute("DELETE FROM objects WHERE hash=?", (old_key,))
-                            used -= size
-                    os.replace(temporary, target)
+                        retired = root / f".purged-{secrets.token_hex(16)}"
+                        images.rename(retired)
+                        try:
+                            images.mkdir()
+                            os.replace(temporary, target)
+                        except OSError:
+                            if images.exists():
+                                images.rmdir()
+                            retired.rename(images)
+                            raise
+                        db.execute("DELETE FROM objects")
+                    else:
+                        os.replace(temporary, target)
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
                 created = True
             db.execute("INSERT OR IGNORE INTO objects (hash,bytes,created) VALUES (?,?,?)", (key, len(data), time.time()))
+        if retired is not None:
+            # Readers and later uploads can continue while disk space is freed.
+            reclaim_purged(retired)
         return jsonify(url=f"{app.config['PUBLIC_URL']}/covers/{key}.jpg", sha256=key), 201 if created else 200
+
+    @app.get("/v1/artwork/<key>/status")
+    def artwork_status(key):
+        if not re.fullmatch(r"[a-f0-9]{64}", key):
+            abort(404)
+        with lock:
+            exists = (images / f"{key}.jpg").is_file()
+        # Unlike immutable image URLs, this answer must always reach the origin.
+        response = jsonify(exists=exists)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["CDN-Cache-Control"] = "no-store"
+        return response
 
     @app.route("/covers/<filename>", methods=["GET", "HEAD"])
     def cover(filename):

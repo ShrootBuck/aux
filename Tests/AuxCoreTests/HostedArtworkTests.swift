@@ -81,7 +81,7 @@ struct HostedArtworkTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let hash = HostedArtwork.contentHash(try #require(ArtworkService.uploadThumbnail(image)))
         let cache: [String: Any] = [
-            "images": [hash: ["url": "https://artwork.zaydkrunz.com/covers/" + String(repeating: "b", count: 64) + ".jpg", "checkedAt": Date().addingTimeInterval(-31 * 86400).timeIntervalSinceReferenceDate]],
+            "images": [hash: ["url": "https://artwork.zaydkrunz.com/covers/" + String(repeating: "b", count: 64) + ".jpg", "checkedAt": Date().timeIntervalSinceReferenceDate]],
             "attempts": attempts.map(\.timeIntervalSinceReferenceDate), "retryAt": [:]
         ]
         try JSONSerialization.data(withJSONObject: cache).write(to: directory.appendingPathComponent("hosted-artwork-v1.json"))
@@ -123,7 +123,7 @@ struct HostedArtworkTests {
         let restored = HostedArtwork(directory: directory, session: session)
         #expect(try await restored.resolve(image) == a)
         let (requests, bodies) = ArtworkUploadStub.recorded
-        #expect(requests.count == 1)
+        #expect(requests.map(\.httpMethod) == ["POST", "GET"])
         #expect(requests.first?.httpMethod == "POST")
         #expect(requests.first?.url?.absoluteString == "https://artwork.zaydkrunz.com/v1/artwork")
         #expect(bodies.first == ArtworkService.uploadThumbnail(image))
@@ -153,25 +153,41 @@ struct HostedArtworkTests {
         await #expect(throws: ArtworkUploadError.self) { try await uploader.resolve(artwork()) }
     }
 
-    @Test func missingCachedImageIsReuploaded() async throws {
-        ArtworkUploadStub.reset { request in request.httpMethod == "HEAD" ? (404, "") : (200, "{\"url\":\"https://artwork.zaydkrunz.com/covers/" + String(repeating: "a", count: 64) + ".jpg\",\"sha256\":\"" + String(repeating: "a", count: 64) + "\"}") }
+    @Test func freshlyCachedImageIsReuploadedImmediatelyWhenPurged() async throws {
+        ArtworkUploadStub.reset { request in request.url?.lastPathComponent == "status" ? (200, "{\"exists\":false}") : (200, "{\"url\":\"https://artwork.zaydkrunz.com/covers/" + String(repeating: "a", count: 64) + ".jpg\",\"sha256\":\"" + String(repeating: "a", count: 64) + "\"}") }
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let image = try artwork(); try seed(directory, image: image)
         let session = session(); defer { session.invalidateAndCancel() }
         let url = try await HostedArtwork(directory: directory, session: session).resolve(image)
         #expect(url.lastPathComponent == String(repeating: "a", count: 64) + ".jpg")
-        #expect(ArtworkUploadStub.recorded.0.map(\.httpMethod) == ["HEAD", "POST"])
+        let requests = ArtworkUploadStub.recorded.0
+        #expect(requests.map(\.httpMethod) == ["GET", "POST"])
+        #expect(requests.first?.url?.path == "/v1/artwork/" + String(repeating: "b", count: 64) + "/status")
+        #expect(requests.first?.cachePolicy == .reloadIgnoringLocalCacheData)
+        #expect(requests.first?.value(forHTTPHeaderField: "Cache-Control") == "no-cache")
     }
 
-    @Test func temporaryCDNFailureKeepsCachedURLWithoutUploading() async throws {
-        ArtworkUploadStub.reset { _ in (503, "") }
+    @Test(arguments: [200, 404, 503])
+    func uncertainOriginStatusKeepsCachedURLAndRechecksOnNextUse(_ status: Int) async throws {
+        ArtworkUploadStub.reset { _ in (status, "invalid or unavailable") }
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let image = try artwork(); try seed(directory, image: image)
         let session = session(); defer { session.invalidateAndCancel() }
         let url = try await HostedArtwork(directory: directory, session: session).resolve(image)
         #expect(url.lastPathComponent == String(repeating: "b", count: 64) + ".jpg")
         #expect(try await HostedArtwork(directory: directory, session: session).resolve(image) == url)
-        #expect(ArtworkUploadStub.recorded.0.map(\.httpMethod) == ["HEAD"])
+        #expect(ArtworkUploadStub.recorded.0.map(\.httpMethod) == ["GET", "GET"])
+    }
+
+    @Test func everyCachedReuseChecksOriginWithoutUploadingExistingArtwork() async throws {
+        ArtworkUploadStub.reset { _ in (200, "{\"exists\":true}") }
+        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let image = try artwork(); try seed(directory, image: image)
+        let session = session(); defer { session.invalidateAndCancel() }
+        let uploader = HostedArtwork(directory: directory, session: session)
+        let first = try await uploader.resolve(image)
+        #expect(try await uploader.resolve(image) == first)
+        #expect(ArtworkUploadStub.recorded.0.map(\.httpMethod) == ["GET", "GET"])
     }
 
     @Test func hourlyBudgetRejectsNewUploadsAfterRestart() async throws {
